@@ -13,7 +13,6 @@ const DURATION_UNIT_MS: Record<string, number> = {
   d: 24 * 60 * 60 * 1000,
 };
 
-/** Parses jsonwebtoken-style durations ("15m", "7d", "1m") into milliseconds — the single source of truth so the cookie lifetime always matches the token's own expiry. */
 function parseDurationMs(input: string): number {
   const match = /^(\d+)(s|m|h|d)$/.exec(input.trim());
   if (!match) {
@@ -36,6 +35,9 @@ export const env = {
     password: optional("DB_PASSWORD", ""),
     name: optional("DB_NAME", "trojan_leave_tracker"),
     connectionLimit: Number(optional("DB_CONNECTION_LIMIT", "10")),
+    // Paste the full Aiven CA certificate (the whole "-----BEGIN CERTIFICATE-----" block)
+    // into this env var as-is. Empty locally, so local MySQL/MariaDB is unaffected.
+    sslCa: optional("DB_SSL_CA", ""),
   },
   jwt: {
     secret: optional("JWT_SECRET", "dev-only-insecure-secret"),

@@ -10,6 +10,7 @@ export const pool = mysql.createPool({
   connectionLimit: env.db.connectionLimit,
   waitForConnections: true,
   dateStrings: true,
+  ssl: env.db.sslCa ? { ca: env.db.sslCa } : undefined,
 });
 
 export async function checkDatabaseConnection(): Promise<boolean> {

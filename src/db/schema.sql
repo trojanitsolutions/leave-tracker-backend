@@ -14,14 +14,13 @@ CREATE TABLE IF NOT EXISTS employees (
   joining_date DATE NOT NULL,
   annual_entitlement_days INT UNSIGNED NOT NULL DEFAULT 30,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
+  -- Bumped on logout / password change to invalidate every outstanding refresh
+  -- token for that employee at once, without storing individual tokens.
+  token_version INT UNSIGNED NOT NULL DEFAULT 0,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT fk_employees_manager FOREIGN KEY (manager_id) REFERENCES employees (id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
-
--- Bumped on logout / password change to invalidate every outstanding refresh
--- token for that employee at once, without storing individual tokens.
-ALTER TABLE employees ADD COLUMN IF NOT EXISTS token_version INT UNSIGNED NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS leave_requests (
   id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -74,16 +73,15 @@ CREATE TABLE IF NOT EXISTS company_settings (
   default_annual_entitlement_days INT UNSIGNED NOT NULL DEFAULT 30,
   eligibility_months INT UNSIGNED NOT NULL DEFAULT 12,
   cycle_length_months INT UNSIGNED NOT NULL DEFAULT 12,
+  -- Admin dashboard alert thresholds — previously hardcoded, now tunable per company.
+  back_to_work_watchlist_days INT UNSIGNED NOT NULL DEFAULT 10,
+  approaching_eligibility_days INT UNSIGNED NOT NULL DEFAULT 60,
+  pending_approval_alert_days INT UNSIGNED NOT NULL DEFAULT 3,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT chk_settings_single_row CHECK (id = 1)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
 
 INSERT IGNORE INTO company_settings (id) VALUES (1);
-
--- Admin dashboard alert thresholds — previously hardcoded, now tunable per company.
-ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS back_to_work_watchlist_days INT UNSIGNED NOT NULL DEFAULT 10;
-ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS approaching_eligibility_days INT UNSIGNED NOT NULL DEFAULT 60;
-ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS pending_approval_alert_days INT UNSIGNED NOT NULL DEFAULT 3;
 
 CREATE TABLE IF NOT EXISTS leave_cycles (
   id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

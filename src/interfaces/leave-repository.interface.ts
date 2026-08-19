@@ -27,9 +27,7 @@ export interface ILeaveRepository {
   findAll(filter?: LeaveRequestFilter): Promise<LeaveRequest[]>;
   findOverlapping(employeeId: number, startDate: string, endDate: string): Promise<LeaveRequest[]>;
   create(data: CreateLeaveRequestInput): Promise<LeaveRequest>;
-  /** Sets `decided_at = NOW()` for approved/rejected, or clears it when reverting to pending (undo). */
   updateStatus(id: number, status: LeaveDecisionStatus): Promise<LeaveRequest>;
-  /** Admin correction — patches any subset of these fields directly, no status-transition rules applied. */
   updateFields(
     id: number,
     data: {

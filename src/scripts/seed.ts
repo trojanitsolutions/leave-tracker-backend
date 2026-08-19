@@ -1,7 +1,6 @@
 import bcrypt from "bcryptjs";
 import { pool } from "../config/database";
 
-/** Dev-only demo credential. Every seeded employee shares this password. */
 const DEV_PASSWORD = "TrojanDemo123!";
 
 interface SeedEmployee {

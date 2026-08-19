@@ -1,7 +1,6 @@
 import { EmployeeLeaveStatus, Employee, LeaveDecisionStatus, LeaveExtension, LeaveRequest, UserRole } from "./entities";
 
 export interface LeaveBalance {
-  /** False until the employee's 13th-month eligibility date arrives — no entitlement exists yet. */
   isEligible: boolean;
   cycleStart: string;
   cycleEnd: string;
@@ -12,7 +11,6 @@ export interface LeaveBalance {
   nextCycleStartsOn: string | null;
 }
 
-/** A single row in an employee's merged leave + extension history. */
 export interface LeaveHistoryEntry {
   id: number;
   kind: "leave" | "extension";

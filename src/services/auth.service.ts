@@ -44,7 +44,6 @@ export class AuthService {
     return { accessToken, refreshToken, employee: safeEmployee };
   }
 
-  /** Verifies the refresh token and, if still valid, mints a fresh access token. */
   async refresh(refreshToken: string): Promise<{ accessToken: string; employee: Employee }> {
     let payload;
     try {
@@ -73,14 +72,12 @@ export class AuthService {
     return { accessToken, employee };
   }
 
-  /** Best-effort: bumps token_version so every outstanding refresh token for this employee dies immediately. */
   async logout(refreshToken: string | undefined): Promise<void> {
     if (!refreshToken) return;
     try {
       const payload = verifyToken(refreshToken, "refresh");
       await this.employeeRepository.incrementTokenVersion(payload.employeeId);
     } catch {
-      // Already invalid/expired — nothing to revoke.
     }
   }
 
@@ -108,11 +105,9 @@ export class AuthService {
 
     const newHash = await bcrypt.hash(newPassword, 10);
     await this.employeeRepository.updatePassword(employeeId, newHash);
-    // Invalidate every other signed-in session/device for this employee.
     await this.employeeRepository.incrementTokenVersion(employeeId);
   }
 
-  /** Always resolves without error — never reveals whether an email exists. */
   async forgotPassword(email: string): Promise<void> {
     const employee = await this.employeeRepository.findByEmail(email);
     if (!employee || !employee.isActive) {
@@ -125,7 +120,6 @@ export class AuthService {
     await sendPasswordResetOtpEmail(employee.email, employee.fullName, otp, OTP_EXPIRES_MINUTES);
   }
 
-  /** Verifies the emailed code and, if correct, returns a short-lived token that authorizes one password reset. */
   async verifyResetOtp(email: string, otp: string): Promise<string> {
     const invalid = () => ApiError.badRequest("That code is invalid or has expired.");
 

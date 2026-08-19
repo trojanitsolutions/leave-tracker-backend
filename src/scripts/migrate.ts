@@ -14,6 +14,7 @@ async function migrate(): Promise<void> {
     password: env.db.password,
     database: env.db.name,
     multipleStatements: true,
+    ssl: env.db.sslCa ? { ca: env.db.sslCa } : undefined,
   });
 
   try {

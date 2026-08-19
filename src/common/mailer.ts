@@ -8,7 +8,6 @@ const transporter = nodemailer.createTransport({
   auth: env.smtp.user ? { user: env.smtp.user, pass: env.smtp.password } : undefined,
 });
 
-/** Best-effort send — returns false (never throws) if SMTP isn't configured or delivery fails. */
 export async function sendWelcomeEmail(
   to: string,
   fullName: string,
@@ -44,7 +43,6 @@ export async function sendWelcomeEmail(
   }
 }
 
-/** Best-effort send — returns false (never throws) if SMTP isn't configured or delivery fails. */
 export async function sendPasswordResetOtpEmail(
   to: string,
   fullName: string,
