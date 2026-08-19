@@ -35,8 +35,6 @@ export const env = {
     password: optional("DB_PASSWORD", ""),
     name: optional("DB_NAME", "trojan_leave_tracker"),
     connectionLimit: Number(optional("DB_CONNECTION_LIMIT", "10")),
-    // Paste the full Aiven CA certificate (the whole "-----BEGIN CERTIFICATE-----" block)
-    // into this env var as-is. Empty locally, so local MySQL/MariaDB is unaffected.
     sslCa: optional("DB_SSL_CA", ""),
   },
   jwt: {

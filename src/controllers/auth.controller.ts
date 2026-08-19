@@ -4,18 +4,20 @@ import { sendSuccess } from "../common/ApiResponse";
 import { env } from "../config/env";
 import { AuthService } from "../services/auth.service";
 
+const isProduction = env.nodeEnv === "production";
+
 const ACCESS_COOKIE_OPTIONS: CookieOptions = {
   httpOnly: true,
-  secure: env.nodeEnv === "production",
-  sameSite: "lax",
+  secure: isProduction,
+  sameSite: isProduction ? "none" : "lax",
   maxAge: env.auth.accessCookieMaxAgeMs,
   path: "/",
 };
 
 const REFRESH_COOKIE_OPTIONS: CookieOptions = {
   httpOnly: true,
-  secure: env.nodeEnv === "production",
-  sameSite: "lax",
+  secure: isProduction,
+  sameSite: isProduction ? "none" : "lax",
   maxAge: env.auth.refreshCookieMaxAgeMs,
   path: env.auth.refreshCookiePath,
 };
