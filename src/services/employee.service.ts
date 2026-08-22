@@ -88,6 +88,14 @@ export class EmployeeService {
   ): Promise<Employee> {
     const before = await this.get(id);
 
+    // Admin's only manager-related action is assigning one as someone's reporting manager —
+    // nothing about the manager's own record is editable here, not just their role.
+    if (before.role === "manager") {
+      throw ApiError.badRequest(
+        "Manager accounts can't be edited here — only assigned as a reporting manager.",
+      );
+    }
+
     if (input.fullName !== undefined && !input.fullName.trim()) {
       throw ApiError.badRequest("Full name is required.");
     }
@@ -96,10 +104,9 @@ export class EmployeeService {
     }
     if (input.role !== undefined) {
       this.validateRole(input.role);
-      // A manager's role is fixed once provisioned via the create-manager script — this
-      // endpoint can neither promote someone into it nor demote an existing manager out of it.
-      // Resubmitting the same, unchanged role (e.g. a locked form field) is fine either way.
-      if (input.role !== before.role && (input.role === "manager" || before.role === "manager")) {
+      // Manager accounts are provisioned via the create-manager script, never promoted into
+      // here (before.role === "manager" is already rejected above, so this only guards promotion).
+      if (input.role !== before.role && input.role === "manager") {
         throw ApiError.badRequest("A manager's role can't be changed here.");
       }
     }
