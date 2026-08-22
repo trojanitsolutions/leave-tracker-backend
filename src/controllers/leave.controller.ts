@@ -27,20 +27,26 @@ export class LeaveController {
   };
 
   precheck = async (req: Request, res: Response): Promise<void> => {
-    const { startDate, endDate } = req.body as { startDate?: string; endDate?: string };
+    const { startDate, endDate, leaveTypeId } = req.body as {
+      startDate?: string;
+      endDate?: string;
+      leaveTypeId?: number;
+    };
     if (!startDate || !endDate) {
       throw ApiError.badRequest("startDate and endDate are required.");
     }
-    const result = await this.leaveService.precheck(this.employeeId(req), startDate, endDate);
+    const result = await this.leaveService.precheck(this.employeeId(req), startDate, endDate, leaveTypeId);
     sendSuccess(res, result);
   };
 
   apply = async (req: Request, res: Response): Promise<void> => {
-    const { startDate, endDate, reason, attachmentName } = req.body as {
+    const { startDate, endDate, reason, attachmentName, attachmentUrl, leaveTypeId } = req.body as {
       startDate?: string;
       endDate?: string;
       reason?: string | null;
       attachmentName?: string | null;
+      attachmentUrl?: string | null;
+      leaveTypeId?: number;
     };
     if (!startDate || !endDate) {
       throw ApiError.badRequest("startDate and endDate are required.");
@@ -50,6 +56,8 @@ export class LeaveController {
       endDate,
       reason: reason ?? null,
       attachmentName: attachmentName ?? null,
+      attachmentUrl: attachmentUrl ?? null,
+      leaveTypeId,
     });
     sendSuccess(res, created, 201);
   };

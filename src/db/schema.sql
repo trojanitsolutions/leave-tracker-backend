@@ -22,15 +22,58 @@ CREATE TABLE IF NOT EXISTS employees (
   CONSTRAINT fk_employees_manager FOREIGN KEY (manager_id) REFERENCES employees (id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS leave_types (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  code VARCHAR(50) NOT NULL UNIQUE,
+  name VARCHAR(100) NOT NULL UNIQUE,
+  is_paid TINYINT(1) NOT NULL DEFAULT 1,
+  requires_eligibility TINYINT(1) NOT NULL DEFAULT 1,
+  -- True only for the built-in Unpaid Extension type: must be requested as an
+  -- extension of an existing approved leave, never a standalone application.
+  is_child_type TINYINT(1) NOT NULL DEFAULT 0,
+  default_entitlement_days INT UNSIGNED NULL,
+  -- True only for the two built-in types (annual, unpaid_extension) — admin UI
+  -- locks every config field except name/sort_order on these rows.
+  is_system TINYINT(1) NOT NULL DEFAULT 0,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  sort_order INT UNSIGNED NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT chk_leave_type_entitlement CHECK (is_paid = 1 OR default_entitlement_days IS NULL),
+  CONSTRAINT chk_leave_type_child_unpaid CHECK (is_child_type = 0 OR is_paid = 0)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO leave_types
+  (id, code, name, is_paid, requires_eligibility, is_child_type, default_entitlement_days, is_system, is_active, sort_order)
+VALUES
+  (1, 'annual', 'Annual Leave', 1, 1, 0, NULL, 1, 1, 1),
+  (2, 'unpaid_extension', 'Unpaid Extension', 0, 0, 1, NULL, 1, 1, 2);
+
+-- Per-employee entitlement override for any paid leave type EXCEPT 'annual', which
+-- keeps using employees.annual_entitlement_days — an intentional, permanent asymmetry.
+CREATE TABLE IF NOT EXISTS employee_leave_entitlements (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  employee_id INT UNSIGNED NOT NULL,
+  leave_type_id INT UNSIGNED NOT NULL,
+  entitlement_days INT UNSIGNED NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_ele_employee FOREIGN KEY (employee_id) REFERENCES employees (id),
+  CONSTRAINT fk_ele_leave_type FOREIGN KEY (leave_type_id) REFERENCES leave_types (id),
+  UNIQUE KEY uq_ele_employee_type (employee_id, leave_type_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS leave_requests (
   id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   employee_id INT UNSIGNED NOT NULL,
   manager_id INT UNSIGNED NOT NULL,
+  leave_type_id INT UNSIGNED NOT NULL,
   start_date DATE NOT NULL,
   end_date DATE NOT NULL,
   number_of_days INT UNSIGNED NOT NULL,
   reason TEXT NULL,
   attachment_name VARCHAR(255) NULL,
+  attachment_url VARCHAR(500) NULL,
   status ENUM('pending', 'approved', 'rejected', 'cancelled') NOT NULL DEFAULT 'pending',
   expected_back_to_work_date DATE NOT NULL,
   actual_back_to_work_date DATE NULL,
@@ -40,9 +83,11 @@ CREATE TABLE IF NOT EXISTS leave_requests (
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT fk_leave_employee FOREIGN KEY (employee_id) REFERENCES employees (id),
   CONSTRAINT fk_leave_manager FOREIGN KEY (manager_id) REFERENCES employees (id),
+  CONSTRAINT fk_leave_type FOREIGN KEY (leave_type_id) REFERENCES leave_types (id),
   INDEX idx_leave_employee (employee_id),
   INDEX idx_leave_manager (manager_id),
-  INDEX idx_leave_dates (start_date, end_date)
+  INDEX idx_leave_dates (start_date, end_date),
+  INDEX idx_leave_type (leave_type_id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS leave_extensions (
@@ -50,11 +95,13 @@ CREATE TABLE IF NOT EXISTS leave_extensions (
   leave_request_id INT UNSIGNED NOT NULL,
   employee_id INT UNSIGNED NOT NULL,
   manager_id INT UNSIGNED NOT NULL,
+  leave_type_id INT UNSIGNED NOT NULL,
   start_date DATE NOT NULL,
   end_date DATE NOT NULL,
   number_of_days INT UNSIGNED NOT NULL,
   reason TEXT NULL,
   attachment_name VARCHAR(255) NULL,
+  attachment_url VARCHAR(500) NULL,
   status ENUM('pending', 'approved', 'rejected', 'cancelled') NOT NULL DEFAULT 'pending',
   submitted_at DATETIME NOT NULL,
   decided_at DATETIME NULL,
@@ -63,6 +110,7 @@ CREATE TABLE IF NOT EXISTS leave_extensions (
   CONSTRAINT fk_ext_leave_request FOREIGN KEY (leave_request_id) REFERENCES leave_requests (id),
   CONSTRAINT fk_ext_employee FOREIGN KEY (employee_id) REFERENCES employees (id),
   CONSTRAINT fk_ext_manager FOREIGN KEY (manager_id) REFERENCES employees (id),
+  CONSTRAINT fk_ext_leave_type FOREIGN KEY (leave_type_id) REFERENCES leave_types (id),
   INDEX idx_ext_employee (employee_id),
   INDEX idx_ext_manager (manager_id),
   INDEX idx_ext_leave_request (leave_request_id)

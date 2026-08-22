@@ -24,5 +24,5 @@ export interface ILeaveCycleRepository {
   findByEmployeeId(employeeId: number): Promise<LeaveCycle[]>;
   findByEmployeeAndStart(employeeId: number, cycleStart: string): Promise<LeaveCycle | null>;
   create(data: CreateLeaveCycleInput): Promise<LeaveCycle>;
-  deleteBySourceLeaveRequestId(employeeId: number, leaveRequestId: number): Promise<void>;
+  deleteAllByEmployeeId(employeeId: number): Promise<void>;
 }

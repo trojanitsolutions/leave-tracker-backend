@@ -7,6 +7,7 @@ import { EmployeeRepository } from "../repositories/employee.repository";
 import { ExtensionRepository } from "../repositories/extension.repository";
 import { LeaveCycleRepository } from "../repositories/leave-cycle.repository";
 import { LeaveRepository } from "../repositories/leave.repository";
+import { LeaveTypeRepository } from "../repositories/leave-type.repository";
 import { NotificationRepository } from "../repositories/notification.repository";
 import { SettingsRepository } from "../repositories/settings.repository";
 import { LeaveService } from "../services/leave.service";
@@ -20,6 +21,7 @@ const leaveService = new LeaveService(
   new SettingsRepository(),
   new LeaveCycleRepository(),
   new NotificationRepository(),
+  new LeaveTypeRepository(),
 );
 const controller = new NotificationController(leaveService);
 

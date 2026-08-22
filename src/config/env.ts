@@ -56,4 +56,9 @@ export const env = {
     password: optional("SMTP_PASSWORD", ""),
     fromName: optional("SMTP_FROM_NAME", "Trojan Leave Tracker"),
   },
+  cloudinary: {
+    cloudName: optional("CLOUDINARY_CLOUD_NAME", ""),
+    apiKey: optional("CLOUDINARY_API_KEY", ""),
+    apiSecret: optional("CLOUDINARY_API_SECRET", ""),
+  },
 } as const;

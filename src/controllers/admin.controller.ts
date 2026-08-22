@@ -43,6 +43,7 @@ export class AdminController {
       department: query.department || undefined,
       managerId: query.managerId ? Number(query.managerId) : undefined,
       kind: query.kind === "leave" || query.kind === "extension" ? query.kind : undefined,
+      leaveTypeId: query.leaveTypeId ? Number(query.leaveTypeId) : undefined,
       status:
         query.status === "pending" ||
         query.status === "approved" ||

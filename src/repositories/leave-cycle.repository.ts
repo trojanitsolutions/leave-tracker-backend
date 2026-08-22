@@ -72,10 +72,7 @@ export class LeaveCycleRepository implements ILeaveCycleRepository {
     return mapRow(rows[0]);
   }
 
-  async deleteBySourceLeaveRequestId(employeeId: number, leaveRequestId: number): Promise<void> {
-    await pool.query("DELETE FROM leave_cycles WHERE employee_id = ? AND source_leave_request_id = ?", [
-      employeeId,
-      leaveRequestId,
-    ]);
+  async deleteAllByEmployeeId(employeeId: number): Promise<void> {
+    await pool.query("DELETE FROM leave_cycles WHERE employee_id = ?", [employeeId]);
   }
 }

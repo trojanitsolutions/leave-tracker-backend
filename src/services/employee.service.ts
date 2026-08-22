@@ -49,6 +49,11 @@ export class EmployeeService {
     this.validateEmail(input.email);
     this.validatePassword(input.password);
     this.validateRole(input.role);
+    if (input.role === "manager") {
+      throw ApiError.badRequest(
+        "Manager accounts aren't created here — provision them with the create-manager script, then assign them as a reporting manager.",
+      );
+    }
     if (!input.joiningDate) {
       throw ApiError.badRequest("Joining date is required.");
     }
@@ -81,7 +86,7 @@ export class EmployeeService {
     input: UpdateEmployeeInput,
     performedByEmployeeId: number,
   ): Promise<Employee> {
-    await this.get(id);
+    const before = await this.get(id);
 
     if (input.fullName !== undefined && !input.fullName.trim()) {
       throw ApiError.badRequest("Full name is required.");
@@ -91,6 +96,12 @@ export class EmployeeService {
     }
     if (input.role !== undefined) {
       this.validateRole(input.role);
+      // A manager's role is fixed once provisioned via the create-manager script — this
+      // endpoint can neither promote someone into it nor demote an existing manager out of it.
+      // Resubmitting the same, unchanged role (e.g. a locked form field) is fine either way.
+      if (input.role !== before.role && (input.role === "manager" || before.role === "manager")) {
+        throw ApiError.badRequest("A manager's role can't be changed here.");
+      }
     }
     if (input.annualEntitlementDays !== undefined) {
       this.validateEntitlement(input.annualEntitlementDays);

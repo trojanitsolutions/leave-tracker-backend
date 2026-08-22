@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx src/scripts/migrate.ts",
     "db:seed": "tsx src/scripts/seed.ts",
-    "create-admin": "tsx src/scripts/create-admin.ts"
+    "create-admin": "tsx src/scripts/create-admin.ts",
+    "create-manager": "tsx src/scripts/create-manager.ts"
   },
   "dependencies": {
     "@types/bcryptjs": "^2.4.6",
@@ -22,6 +23,7 @@
     "@types/node": "^20.14.10",
     "@types/nodemailer": "^8.0.1",
     "bcryptjs": "^2.4.3",
+    "cloudinary": "^2.10.1",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
@@ -29,11 +31,13 @@
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
+    "multer": "^2.2.0",
     "mysql2": "^3.11.0",
     "nodemailer": "^9.0.5",
     "typescript": "^5.5.3"
   },
   "devDependencies": {
+    "@types/multer": "^2.2.0",
     "tsx": "^4.16.2"
   }
 }

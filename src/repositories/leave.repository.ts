@@ -11,11 +11,13 @@ interface LeaveRequestRow extends RowDataPacket {
   id: number;
   employee_id: number;
   manager_id: number;
+  leave_type_id: number;
   start_date: string;
   end_date: string;
   number_of_days: number;
   reason: string | null;
   attachment_name: string | null;
+  attachment_url: string | null;
   status: LeaveDecisionStatus;
   expected_back_to_work_date: string;
   actual_back_to_work_date: string | null;
@@ -30,11 +32,13 @@ function mapRow(row: LeaveRequestRow): LeaveRequest {
     id: row.id,
     employeeId: row.employee_id,
     managerId: row.manager_id,
+    leaveTypeId: row.leave_type_id,
     startDate: row.start_date,
     endDate: row.end_date,
     numberOfDays: row.number_of_days,
     reason: row.reason,
-    attachmentUrl: row.attachment_name,
+    attachmentName: row.attachment_name,
+    attachmentUrl: row.attachment_url,
     status: row.status,
     expectedBackToWorkDate: row.expected_back_to_work_date,
     actualBackToWorkDate: row.actual_back_to_work_date,
@@ -118,16 +122,18 @@ export class LeaveRepository implements ILeaveRepository {
   async create(data: CreateLeaveRequestInput): Promise<LeaveRequest> {
     const [result] = await pool.query<ResultSetHeader>(
       `INSERT INTO leave_requests
-         (employee_id, manager_id, start_date, end_date, number_of_days, reason, attachment_name,
-          expected_back_to_work_date, submitted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+         (employee_id, manager_id, leave_type_id, start_date, end_date, number_of_days, reason, attachment_name,
+          attachment_url, expected_back_to_work_date, submitted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [
         data.employeeId,
         data.managerId,
+        data.leaveTypeId,
         data.startDate,
         data.endDate,
         data.numberOfDays,
         data.reason,
+        data.attachmentName,
         data.attachmentUrl,
         data.expectedBackToWorkDate,
       ],

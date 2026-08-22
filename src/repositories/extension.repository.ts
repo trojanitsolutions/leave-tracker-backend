@@ -12,11 +12,13 @@ interface LeaveExtensionRow extends RowDataPacket {
   leave_request_id: number;
   employee_id: number;
   manager_id: number;
+  leave_type_id: number;
   start_date: string;
   end_date: string;
   number_of_days: number;
   reason: string | null;
   attachment_name: string | null;
+  attachment_url: string | null;
   status: LeaveDecisionStatus;
   submitted_at: string;
   decided_at: string | null;
@@ -30,11 +32,13 @@ function mapRow(row: LeaveExtensionRow): LeaveExtension {
     leaveRequestId: row.leave_request_id,
     employeeId: row.employee_id,
     managerId: row.manager_id,
+    leaveTypeId: row.leave_type_id,
     startDate: row.start_date,
     endDate: row.end_date,
     numberOfDays: row.number_of_days,
     reason: row.reason,
-    attachmentUrl: row.attachment_name,
+    attachmentName: row.attachment_name,
+    attachmentUrl: row.attachment_url,
     status: row.status,
     submittedAt: row.submitted_at,
     decidedAt: row.decided_at,
@@ -108,16 +112,18 @@ export class ExtensionRepository implements IExtensionRepository {
   async create(data: CreateLeaveExtensionInput): Promise<LeaveExtension> {
     const [result] = await pool.query<ResultSetHeader>(
       `INSERT INTO leave_extensions
-         (leave_request_id, employee_id, manager_id, start_date, end_date, number_of_days, reason, attachment_name, submitted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+         (leave_request_id, employee_id, manager_id, leave_type_id, start_date, end_date, number_of_days, reason, attachment_name, attachment_url, submitted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [
         data.leaveRequestId,
         data.employeeId,
         data.managerId,
+        data.leaveTypeId,
         data.startDate,
         data.endDate,
         data.numberOfDays,
         data.reason,
+        data.attachmentName,
         data.attachmentUrl,
       ],
     );

@@ -29,11 +29,12 @@ export class ExtensionController {
   };
 
   apply = async (req: Request, res: Response): Promise<void> => {
-    const { startDate, endDate, reason, attachmentName } = req.body as {
+    const { startDate, endDate, reason, attachmentName, attachmentUrl } = req.body as {
       startDate?: string;
       endDate?: string;
       reason?: string | null;
       attachmentName?: string | null;
+      attachmentUrl?: string | null;
     };
     if (!startDate || !endDate) {
       throw ApiError.badRequest("startDate and endDate are required.");
@@ -43,6 +44,7 @@ export class ExtensionController {
       endDate,
       reason: reason ?? null,
       attachmentName: attachmentName ?? null,
+      attachmentUrl: attachmentUrl ?? null,
     });
     sendSuccess(res, created, 201);
   };

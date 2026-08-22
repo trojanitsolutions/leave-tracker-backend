@@ -12,10 +12,12 @@ export interface LeaveRequestFilter {
 export interface CreateLeaveRequestInput {
   employeeId: number;
   managerId: number;
+  leaveTypeId: number;
   startDate: string;
   endDate: string;
   numberOfDays: number;
   reason: string | null;
+  attachmentName: string | null;
   attachmentUrl: string | null;
   expectedBackToWorkDate: string;
 }

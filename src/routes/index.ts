@@ -5,7 +5,9 @@ import employeeRoutes from "./employee.routes";
 import extensionRoutes from "./extension.routes";
 import healthRoutes from "./health.routes";
 import leaveRoutes from "./leave.routes";
+import leaveTypeRoutes from "./leave-type.routes";
 import notificationRoutes from "./notification.routes";
+import uploadRoutes from "./upload.routes";
 
 const router = Router();
 
@@ -16,5 +18,7 @@ router.use("/admin", adminRoutes);
 router.use("/employees", employeeRoutes);
 router.use("/extensions", extensionRoutes);
 router.use("/notifications", notificationRoutes);
+router.use("/leave-types", leaveTypeRoutes);
+router.use("/uploads", uploadRoutes);
 
 export default router;

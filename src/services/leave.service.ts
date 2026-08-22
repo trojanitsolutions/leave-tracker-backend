@@ -17,9 +17,10 @@ import { IEmployeeRepository } from "../interfaces/employee-repository.interface
 import { IExtensionRepository } from "../interfaces/extension-repository.interface";
 import { ILeaveCycleRepository, LeaveCycle } from "../interfaces/leave-cycle-repository.interface";
 import { ILeaveRepository } from "../interfaces/leave-repository.interface";
+import { ILeaveTypeRepository } from "../interfaces/leave-type-repository.interface";
 import { INotificationRepository, Notification } from "../interfaces/notification-repository.interface";
 import { CompanySettings, ISettingsRepository, UpdateSettingsInput } from "../interfaces/settings-repository.interface";
-import { Employee, EmployeeLeaveStatus, LeaveExtension, LeaveRequest } from "../types/entities";
+import { Employee, EmployeeLeaveStatus, LeaveExtension, LeaveRequest, LeaveType } from "../types/entities";
 import {
   AdminBackToWorkRow,
   AdminDepartmentLoad,
@@ -73,6 +74,11 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   extension_approved: "Approved extension request",
   extension_rejected: "Rejected extension request",
   extension_decision_undone: "Reversed extension decision",
+  leave_type_created: "Created leave type",
+  leave_type_updated: "Updated leave type",
+  leave_type_deactivated: "Deactivated leave type",
+  leave_type_reactivated: "Reactivated leave type",
+  leave_type_deleted: "Deleted leave type",
   employee_created: "Created employee record",
   employee_updated: "Updated employee record",
   company_settings_updated: "Updated company settings",
@@ -83,6 +89,8 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
 const RECENT_REQUESTS_LIMIT = 10;
 
 export class LeaveService {
+  private cachedUnpaidExtensionType: LeaveType | null = null;
+
   constructor(
     private readonly employeeRepository: IEmployeeRepository,
     private readonly leaveRepository: ILeaveRepository,
@@ -91,12 +99,66 @@ export class LeaveService {
     private readonly settingsRepository: ISettingsRepository,
     private readonly leaveCycleRepository: ILeaveCycleRepository,
     private readonly notificationRepository: INotificationRepository,
+    private readonly leaveTypeRepository: ILeaveTypeRepository,
   ) {}
+
+  /** Resolves the requested type, defaulting to Annual Leave when omitted (backward compatible). */
+  private async resolveLeaveType(leaveTypeId?: number): Promise<LeaveType> {
+    if (leaveTypeId === undefined) {
+      const annual = await this.leaveTypeRepository.findByCode("annual");
+      if (!annual) {
+        throw new Error("Annual leave type missing — migration didn't seed it");
+      }
+      return annual;
+    }
+    const type = await this.leaveTypeRepository.findById(leaveTypeId);
+    if (!type || !type.isActive) {
+      throw ApiError.badRequest("That leave type isn't available.");
+    }
+    return type;
+  }
+
+  private async getUnpaidExtensionType(): Promise<LeaveType> {
+    if (this.cachedUnpaidExtensionType) {
+      return this.cachedUnpaidExtensionType;
+    }
+    const type = await this.leaveTypeRepository.findByCode("unpaid_extension");
+    if (!type) {
+      throw new Error("Unpaid extension leave type missing — migration didn't seed it");
+    }
+    this.cachedUnpaidExtensionType = type;
+    return type;
+  }
+
+  private async getLeaveTypesMap(): Promise<Map<number, LeaveType>> {
+    const types = await this.leaveTypeRepository.findAll();
+    return new Map(types.map((t) => [t.id, t]));
+  }
+
+  private emptyBalance(): LeaveBalance {
+    const todayISO = toISODate(todayUTC());
+    return {
+      isEligible: true,
+      cycleStart: todayISO,
+      cycleEnd: todayISO,
+      entitlement: 0,
+      used: 0,
+      pending: 0,
+      remaining: 0,
+      nextCycleStartsOn: null,
+    };
+  }
 
   async getOverview(employeeId: number): Promise<EmployeeOverview> {
     const employee = await this.requireEmployee(employeeId);
     const today = todayUTC();
     const settings = await this.settingsRepository.get();
+    const leaveTypes = await this.leaveTypeRepository.findAll();
+    const leaveTypesMap = new Map(leaveTypes.map((t) => [t.id, t]));
+    const annualType = leaveTypes.find((t) => t.code === "annual");
+    if (!annualType) {
+      throw new Error("Annual leave type missing — migration didn't seed it");
+    }
 
     const allRequests = await this.leaveRepository.findByEmployeeId(employeeId);
     const allExtensions = await this.extensionRepository.findByEmployeeId(employeeId);
@@ -118,8 +180,14 @@ export class LeaveService {
       ) ?? null;
 
     let status: EmployeeLeaveStatus = "not_on_leave";
-    if (currentLeave) status = "on_annual_leave";
-    else if (currentExtension) status = "on_unpaid_extension";
+    let currentLeaveTypeName: string | null = null;
+    if (currentLeave) {
+      status = "on_leave";
+      currentLeaveTypeName = leaveTypesMap.get(currentLeave.leaveTypeId)?.name ?? null;
+    } else if (currentExtension) {
+      status = "on_unpaid_extension";
+      currentLeaveTypeName = leaveTypesMap.get(currentExtension.leaveTypeId)?.name ?? null;
+    }
 
     let activeNextCycleStart: string | null = null;
     if (currentLeave) {
@@ -128,16 +196,25 @@ export class LeaveService {
       activeNextCycleStart = toISODate(addDays(parseISODate(currentExtension.endDate), 1));
     }
 
+    const annualRequests = allRequests.filter((r) => r.leaveTypeId === annualType.id);
     const balance = await this.computeBalance(
       employee,
-      allRequests,
+      annualRequests,
       today,
       today,
       settings,
       activeNextCycleStart,
     );
 
-    const recent = this.mergeHistory(allRequests, allExtensions).slice(0, RECENT_REQUESTS_LIMIT);
+    const otherBalances: EmployeeOverview["otherBalances"] = [];
+    for (const type of leaveTypes) {
+      if (!type.isPaid || !type.isActive || type.code === "annual") continue;
+      const requestsOfType = allRequests.filter((r) => r.leaveTypeId === type.id);
+      const typeBalance = await this.computeSimpleTypeBalance(employee, type, requestsOfType, today, settings);
+      otherBalances.push({ leaveTypeId: type.id, leaveTypeName: type.name, balance: typeBalance });
+    }
+
+    const recent = this.mergeHistory(allRequests, allExtensions, leaveTypesMap).slice(0, RECENT_REQUESTS_LIMIT);
     const manager = employee.managerId !== null ? await this.employeeRepository.findById(employee.managerId) : null;
 
     return {
@@ -147,7 +224,9 @@ export class LeaveService {
       status,
       currentLeave,
       currentExtension,
+      currentLeaveTypeName,
       balance,
+      otherBalances,
       recent,
     };
   }
@@ -156,7 +235,8 @@ export class LeaveService {
     await this.requireEmployee(employeeId);
     const allRequests = await this.leaveRepository.findByEmployeeId(employeeId);
     const allExtensions = await this.extensionRepository.findByEmployeeId(employeeId);
-    return this.mergeHistory(allRequests, allExtensions);
+    const leaveTypesMap = await this.getLeaveTypesMap();
+    return this.mergeHistory(allRequests, allExtensions, leaveTypesMap);
   }
 
   async getMyCycles(employeeId: number): Promise<LeaveCycle[]> {
@@ -164,11 +244,17 @@ export class LeaveService {
     return this.leaveCycleRepository.findByEmployeeId(employeeId);
   }
 
-  private mergeHistory(requests: LeaveRequest[], extensions: LeaveExtension[]): LeaveHistoryEntry[] {
+  private mergeHistory(
+    requests: LeaveRequest[],
+    extensions: LeaveExtension[],
+    leaveTypesMap: Map<number, LeaveType>,
+  ): LeaveHistoryEntry[] {
     const leaveEntries: LeaveHistoryEntry[] = requests.map((r) => ({
       id: r.id,
       kind: "leave",
       parentLeaveRequestId: null,
+      leaveTypeId: r.leaveTypeId,
+      leaveTypeName: leaveTypesMap.get(r.leaveTypeId)?.name ?? "Unknown",
       startDate: r.startDate,
       endDate: r.endDate,
       numberOfDays: r.numberOfDays,
@@ -183,6 +269,8 @@ export class LeaveService {
       id: e.id,
       kind: "extension",
       parentLeaveRequestId: e.leaveRequestId,
+      leaveTypeId: e.leaveTypeId,
+      leaveTypeName: leaveTypesMap.get(e.leaveTypeId)?.name ?? "Unpaid Extension",
       startDate: e.startDate,
       endDate: e.endDate,
       numberOfDays: e.numberOfDays,
@@ -196,7 +284,12 @@ export class LeaveService {
     return [...leaveEntries, ...extensionEntries].sort((a, b) => b.startDate.localeCompare(a.startDate));
   }
 
-  async precheck(employeeId: number, startDateInput: string, endDateInput: string): Promise<PrecheckResult> {
+  async precheck(
+    employeeId: number,
+    startDateInput: string,
+    endDateInput: string,
+    leaveTypeId?: number,
+  ): Promise<PrecheckResult> {
     const employee = await this.requireEmployee(employeeId);
     this.validateDateShape(startDateInput, endDateInput);
 
@@ -204,12 +297,22 @@ export class LeaveService {
     const endDate = parseISODate(endDateInput);
     const days = daysBetweenInclusive(startDate, endDate);
 
+    const leaveType = await this.resolveLeaveType(leaveTypeId);
+    if (leaveType.isChildType) {
+      throw ApiError.badRequest(
+        `${leaveType.name} must be requested as an extension of an existing approved leave.`,
+      );
+    }
+
     const settings = await this.settingsRepository.get();
     const allRequests = await this.leaveRepository.findByEmployeeId(employeeId);
+    const requestsOfType = allRequests.filter((r) => r.leaveTypeId === leaveType.id);
     const today = todayUTC();
-    const balance = await this.computeBalance(employee, allRequests, today, startDate, settings);
+    const balance = leaveType.isPaid
+      ? await this.computeBalanceForType(employee, leaveType, requestsOfType, today, startDate, settings)
+      : this.emptyBalance();
 
-    const checks = await this.runChecks(employee, startDate, endDate, days, balance, settings);
+    const checks = await this.runChecks(employee, startDate, endDate, days, balance, settings, leaveType);
     const teamOverlap = await this.getTeamOverlap(employee, startDate, endDate);
 
     return {
@@ -235,12 +338,22 @@ export class LeaveService {
     const endDate = parseISODate(input.endDate);
     const days = daysBetweenInclusive(startDate, endDate);
 
+    const leaveType = await this.resolveLeaveType(input.leaveTypeId);
+    if (leaveType.isChildType) {
+      throw ApiError.badRequest(
+        `${leaveType.name} must be requested as an extension of an existing approved leave.`,
+      );
+    }
+
     const settings = await this.settingsRepository.get();
     const allRequests = await this.leaveRepository.findByEmployeeId(employeeId);
+    const requestsOfType = allRequests.filter((r) => r.leaveTypeId === leaveType.id);
     const today = todayUTC();
-    const balance = await this.computeBalance(employee, allRequests, today, startDate, settings);
+    const balance = leaveType.isPaid
+      ? await this.computeBalanceForType(employee, leaveType, requestsOfType, today, startDate, settings)
+      : this.emptyBalance();
 
-    const checks = await this.runChecks(employee, startDate, endDate, days, balance, settings);
+    const checks = await this.runChecks(employee, startDate, endDate, days, balance, settings, leaveType);
     const failed = checks.find((c) => !c.ok);
     if (failed) {
       throw ApiError.badRequest(failed.body, { checks });
@@ -255,11 +368,13 @@ export class LeaveService {
     const created = await this.leaveRepository.create({
       employeeId: employee.id,
       managerId: employee.managerId,
+      leaveTypeId: leaveType.id,
       startDate: input.startDate,
       endDate: input.endDate,
       numberOfDays: days,
       reason: input.reason,
-      attachmentUrl: input.attachmentName,
+      attachmentName: input.attachmentName,
+      attachmentUrl: input.attachmentUrl,
       expectedBackToWorkDate,
     });
 
@@ -268,20 +383,21 @@ export class LeaveService {
       performedByEmployeeId: employee.id,
       action: "leave_submitted",
       leaveRequestId: created.id,
-      details: { startDate: input.startDate, endDate: input.endDate, days },
+      details: { startDate: input.startDate, endDate: input.endDate, days, leaveTypeId: leaveType.id },
     });
 
     const rangeLabel = `${formatHumanDate(startDate)} – ${formatHumanDate(endDate)}`;
+    const typeLabel = leaveType.name.toLowerCase();
     await this.notify(
       employee.id,
       "leave_submitted",
-      `Your annual leave request for ${rangeLabel} has been submitted.`,
+      `Your ${typeLabel} request for ${rangeLabel} has been submitted.`,
       created.id,
     );
     await this.notify(
       employee.managerId,
       "leave_submitted",
-      `${employee.fullName} submitted an annual leave request for ${rangeLabel}.`,
+      `${employee.fullName} submitted a ${typeLabel} request for ${rangeLabel}.`,
       created.id,
     );
 
@@ -289,6 +405,7 @@ export class LeaveService {
   }
 
   async getManagerQueue(managerId: number): Promise<ManagerQueueResult> {
+    const leaveTypesMap = await this.getLeaveTypesMap();
     const pendingLeaveRequests = await this.leaveRepository.findPendingByManagerId(managerId);
     const pendingExtensions = await this.extensionRepository.findPendingByManagerId(managerId);
     const approvedRequests = await this.leaveRepository.findAll({ managerId, status: "approved" });
@@ -323,12 +440,14 @@ export class LeaveService {
         employeeId: request.employeeId,
         employeeName: overview.employee.fullName,
         department: overview.employee.department,
-        type: "Annual Leave",
+        leaveTypeId: request.leaveTypeId,
+        leaveTypeName: leaveTypesMap.get(request.leaveTypeId)?.name ?? "Unknown",
         startDate: request.startDate,
         endDate: request.endDate,
         numberOfDays: request.numberOfDays,
         reason: request.reason,
-        attachmentName: request.attachmentUrl,
+        attachmentName: request.attachmentName,
+        attachmentUrl: request.attachmentUrl,
         backToWorkDate: request.expectedBackToWorkDate,
         submittedAt: request.submittedAt,
         balance: overview.balance,
@@ -348,12 +467,14 @@ export class LeaveService {
         employeeId: extension.employeeId,
         employeeName: overview.employee.fullName,
         department: overview.employee.department,
-        type: "Unpaid Extension",
+        leaveTypeId: extension.leaveTypeId,
+        leaveTypeName: leaveTypesMap.get(extension.leaveTypeId)?.name ?? "Unpaid Extension",
         startDate: extension.startDate,
         endDate: extension.endDate,
         numberOfDays: extension.numberOfDays,
         reason: extension.reason,
-        attachmentName: extension.attachmentUrl,
+        attachmentName: extension.attachmentName,
+        attachmentUrl: extension.attachmentUrl,
         backToWorkDate: toISODate(addDays(parseISODate(extension.endDate), 1)),
         submittedAt: extension.submittedAt,
         balance: overview.balance,
@@ -374,8 +495,29 @@ export class LeaveService {
     };
   }
 
+  /**
+   * Drops requests immediately superseded by another approved request for the same employee
+   * (next one starts the day this one ends) — i.e. a standalone leave request chained onto an
+   * existing one instead of through the Extension flow. Only the chain's last link has a real
+   * expected back-to-work date; earlier links would otherwise sit "Overdue" forever since the
+   * employee never actually returns in between.
+   */
+  private excludeChainedPredecessors(requests: LeaveRequest[]): LeaveRequest[] {
+    const startDatesByEmployee = new Map<number, Set<string>>();
+    for (const r of requests) {
+      const set = startDatesByEmployee.get(r.employeeId) ?? new Set<string>();
+      set.add(r.startDate);
+      startDatesByEmployee.set(r.employeeId, set);
+    }
+    return requests.filter((r) => {
+      const nextDay = toISODate(addDays(parseISODate(r.endDate), 1));
+      return !startDatesByEmployee.get(r.employeeId)?.has(nextDay);
+    });
+  }
+
   /** Team overview for the Manager Dashboard — distinct from the actionable queue on the Approvals screen. */
   async getManagerOverview(managerId: number): Promise<ManagerOverview> {
+    const leaveTypesMap = await this.getLeaveTypesMap();
     const teamMembers = await this.employeeRepository.findByManagerId(managerId);
     const employeeById = new Map(teamMembers.map((e) => [e.id, e]));
     const today = todayUTC();
@@ -395,7 +537,8 @@ export class LeaveService {
         employeeId: r.employeeId,
         name: employeeById.get(r.employeeId)?.fullName ?? "Unknown",
         department: employeeById.get(r.employeeId)?.department ?? null,
-        type: "Annual Leave",
+        leaveTypeId: r.leaveTypeId,
+        leaveTypeName: leaveTypesMap.get(r.leaveTypeId)?.name ?? "Unknown",
         startDate: r.startDate,
         endDate: r.endDate,
         expectedBackToWorkDate: r.expectedBackToWorkDate,
@@ -407,14 +550,17 @@ export class LeaveService {
         employeeId: e.employeeId,
         name: employeeById.get(e.employeeId)?.fullName ?? "Unknown",
         department: employeeById.get(e.employeeId)?.department ?? null,
-        type: "Unpaid Extension",
+        leaveTypeId: e.leaveTypeId,
+        leaveTypeName: leaveTypesMap.get(e.leaveTypeId)?.name ?? "Unpaid Extension",
         startDate: e.startDate,
         endDate: e.endDate,
         expectedBackToWorkDate: toISODate(addDays(parseISODate(e.endDate), 1)),
       });
     }
 
-    const backToWorkWatchlist: AdminBackToWorkRow[] = approvedRequests
+    const chainTailRequests = this.excludeChainedPredecessors(approvedRequests);
+
+    const backToWorkWatchlist: AdminBackToWorkRow[] = chainTailRequests
       .filter((r) => {
         const expected = parseISODate(r.expectedBackToWorkDate);
         const isOverdue = r.actualBackToWorkDate === null && isBefore(expected, today);
@@ -440,7 +586,7 @@ export class LeaveService {
     const teamOutNextWeek = approvedRequests.filter((r) =>
       rangesOverlap(parseISODate(r.startDate), parseISODate(r.endDate), today, weekAhead),
     ).length;
-    const notReturnedAsExpected = approvedRequests.filter(
+    const notReturnedAsExpected = chainTailRequests.filter(
       (r) => r.actualBackToWorkDate === null && isBefore(parseISODate(r.expectedBackToWorkDate), today),
     ).length;
 
@@ -646,15 +792,18 @@ export class LeaveService {
       throw ApiError.badRequest("You don't have a manager assigned yet — contact HR.");
     }
 
+    const unpaidExtensionType = await this.getUnpaidExtensionType();
     const created = await this.extensionRepository.create({
       leaveRequestId: precheck.currentLeave.id,
       employeeId: employee.id,
       managerId: employee.managerId,
+      leaveTypeId: unpaidExtensionType.id,
       startDate: input.startDate,
       endDate: input.endDate,
       numberOfDays: precheck.days,
       reason: input.reason,
-      attachmentUrl: input.attachmentName,
+      attachmentName: input.attachmentName,
+      attachmentUrl: input.attachmentUrl,
     });
 
     await this.auditRepository.record({
@@ -742,6 +891,7 @@ export class LeaveService {
 
   async getTeamHistory(managerId: number): Promise<TeamHistoryRow[]> {
     const manager = await this.requireEmployee(managerId);
+    const leaveTypesMap = await this.getLeaveTypesMap();
     const teamMembers = await this.employeeRepository.findByManagerId(managerId);
 
     const rows: TeamHistoryRow[] = [];
@@ -755,7 +905,8 @@ export class LeaveService {
           employeeName: member.fullName,
           department: member.department,
           kind: "leave",
-          type: "Annual Leave",
+          leaveTypeId: r.leaveTypeId,
+          leaveTypeName: leaveTypesMap.get(r.leaveTypeId)?.name ?? "Unknown",
           startDate: r.startDate,
           endDate: r.endDate,
           numberOfDays: r.numberOfDays,
@@ -770,7 +921,8 @@ export class LeaveService {
           employeeName: member.fullName,
           department: member.department,
           kind: "extension",
-          type: "Unpaid Extension",
+          leaveTypeId: e.leaveTypeId,
+          leaveTypeName: leaveTypesMap.get(e.leaveTypeId)?.name ?? "Unpaid Extension",
           startDate: e.startDate,
           endDate: e.endDate,
           numberOfDays: e.numberOfDays,
@@ -827,6 +979,7 @@ export class LeaveService {
     monthStart: Date,
     monthEnd: Date,
   ): Promise<TeamCalendarBar[]> {
+    const leaveTypesMap = await this.getLeaveTypesMap();
     const requests = await this.leaveRepository.findByEmployeeId(employeeId);
     const extensions = await this.extensionRepository.findByEmployeeId(employeeId);
     const bars: TeamCalendarBar[] = [];
@@ -836,14 +989,26 @@ export class LeaveService {
       if (!rangesOverlap(parseISODate(r.startDate), parseISODate(r.endDate), monthStart, monthEnd)) {
         continue;
       }
-      bars.push({ startDate: r.startDate, endDate: r.endDate, type: "Annual Leave", status: r.status });
+      bars.push({
+        startDate: r.startDate,
+        endDate: r.endDate,
+        leaveTypeId: r.leaveTypeId,
+        leaveTypeName: leaveTypesMap.get(r.leaveTypeId)?.name ?? "Unknown",
+        status: r.status,
+      });
     }
     for (const e of extensions) {
       if (e.status !== "pending" && e.status !== "approved") continue;
       if (!rangesOverlap(parseISODate(e.startDate), parseISODate(e.endDate), monthStart, monthEnd)) {
         continue;
       }
-      bars.push({ startDate: e.startDate, endDate: e.endDate, type: "Unpaid Extension", status: e.status });
+      bars.push({
+        startDate: e.startDate,
+        endDate: e.endDate,
+        leaveTypeId: e.leaveTypeId,
+        leaveTypeName: leaveTypesMap.get(e.leaveTypeId)?.name ?? "Unpaid Extension",
+        status: e.status,
+      });
     }
     return bars;
   }
@@ -894,7 +1059,9 @@ export class LeaveService {
       return !isBefore(start, today) && !isAfter(start, monthEnd);
     }).length;
 
-    const notReturned = approvedRequests.filter(
+    const chainTailRequests = this.excludeChainedPredecessors(approvedRequests);
+
+    const notReturned = chainTailRequests.filter(
       (r) => r.actualBackToWorkDate === null && isBefore(parseISODate(r.expectedBackToWorkDate), today),
     );
 
@@ -902,7 +1069,7 @@ export class LeaveService {
       (r) => this.daysSince(r.submittedAt, today) > settings.pendingApprovalAlertDays,
     );
 
-    const backToWorkWatchlist: AdminBackToWorkRow[] = approvedRequests
+    const backToWorkWatchlist: AdminBackToWorkRow[] = chainTailRequests
       .filter((r) => {
         const expected = parseISODate(r.expectedBackToWorkDate);
         const isOverdue = r.actualBackToWorkDate === null && isBefore(expected, today);
@@ -962,6 +1129,7 @@ export class LeaveService {
   }
 
   async getAdminLeaveRecords(filter: AdminLeaveRecordFilter = {}): Promise<AdminLeaveRecordRow[]> {
+    const leaveTypesMap = await this.getLeaveTypesMap();
     const repoFilter = {
       employeeId: filter.employeeId,
       managerId: filter.managerId,
@@ -984,7 +1152,8 @@ export class LeaveService {
         employeeName: employeeById.get(r.employeeId)?.fullName ?? "Unknown",
         department: employeeById.get(r.employeeId)?.department ?? null,
         kind: "leave" as const,
-        type: "Annual Leave" as const,
+        leaveTypeId: r.leaveTypeId,
+        leaveTypeName: leaveTypesMap.get(r.leaveTypeId)?.name ?? "Unknown",
         startDate: r.startDate,
         endDate: r.endDate,
         numberOfDays: r.numberOfDays,
@@ -1000,7 +1169,8 @@ export class LeaveService {
         employeeName: employeeById.get(e.employeeId)?.fullName ?? "Unknown",
         department: employeeById.get(e.employeeId)?.department ?? null,
         kind: "extension" as const,
-        type: "Unpaid Extension" as const,
+        leaveTypeId: e.leaveTypeId,
+        leaveTypeName: leaveTypesMap.get(e.leaveTypeId)?.name ?? "Unpaid Extension",
         startDate: e.startDate,
         endDate: e.endDate,
         numberOfDays: e.numberOfDays,
@@ -1014,6 +1184,7 @@ export class LeaveService {
 
     return rows
       .filter((r) => !filter.department || r.department === filter.department)
+      .filter((r) => filter.leaveTypeId === undefined || r.leaveTypeId === filter.leaveTypeId)
       .sort((a, b) => b.startDate.localeCompare(a.startDate));
   }
 
@@ -1042,13 +1213,27 @@ export class LeaveService {
         ? daysBetweenInclusive(parseISODate(startDate), parseISODate(endDate))
         : undefined;
 
-    const updated = await this.leaveRepository.updateFields(leaveRequestId, {
+    let updated = await this.leaveRepository.updateFields(leaveRequestId, {
       startDate: input.startDate,
       endDate: input.endDate,
       numberOfDays,
       reason: input.reason,
       status: input.status,
     });
+
+    // The back-to-work date must track a corrected end date — unless an approved extension
+    // has already shifted it forward, in which case that shift takes precedence and correcting
+    // the original leave's own end date shouldn't clobber it back.
+    if (input.endDate !== undefined) {
+      const linkedExtensions = await this.extensionRepository.findByLeaveRequestId(leaveRequestId);
+      const hasApprovedExtension = linkedExtensions.some((e) => e.status === "approved");
+      if (!hasApprovedExtension) {
+        const recalculatedBackToWork = toISODate(addDays(parseISODate(endDate), 1));
+        if (recalculatedBackToWork !== before.expectedBackToWorkDate) {
+          updated = await this.leaveRepository.updateExpectedBackToWork(leaveRequestId, recalculatedBackToWork);
+        }
+      }
+    }
 
     await this.auditRepository.record({
       employeeId: before.employeeId,
@@ -1062,6 +1247,7 @@ export class LeaveService {
           numberOfDays: before.numberOfDays,
           reason: before.reason,
           status: before.status,
+          expectedBackToWorkDate: before.expectedBackToWorkDate,
         },
         after: {
           startDate: updated.startDate,
@@ -1069,6 +1255,7 @@ export class LeaveService {
           numberOfDays: updated.numberOfDays,
           reason: updated.reason,
           status: updated.status,
+          expectedBackToWorkDate: updated.expectedBackToWorkDate,
         },
       },
     });
@@ -1099,15 +1286,11 @@ export class LeaveService {
       details: { previous: request.actualBackToWorkDate, actualBackToWorkDate },
     });
 
-    // Clearing or correcting the date invalidates whatever cycle was speculatively
-    // generated from the previous value — drop it before (maybe) recording a new one.
-    if (request.actualBackToWorkDate !== actualBackToWorkDate) {
-      await this.leaveCycleRepository.deleteBySourceLeaveRequestId(request.employeeId, leaveRequestId);
-    }
-
-    if (actualBackToWorkDate) {
-      await this.ensureCycleRecorded(request.employeeId, parseISODate(actualBackToWorkDate), leaveRequestId);
-    }
+    // Recording, correcting, or clearing a BTW date can change the true chronological order
+    // of every confirmed-return event this employee has — rebuild the whole cycle chain from
+    // scratch rather than patch one row, so which cycle is "initial" vs. "renewal" is always
+    // derived from real dates, never from which admin action happened to run first.
+    await this.rebuildCycleChain(request.employeeId);
 
     return updated;
   }
@@ -1123,7 +1306,7 @@ export class LeaveService {
     const priorRangeEnd = `${priorYear}-12-31`;
     const cycleLabel = `Cycle ${targetYear}`;
 
-    const [employees, requestsInRangeAll, priorRequestsAll, approvedExtensions, pendingExtensions, allPendingRequests, allApprovedRequests] =
+    const [employees, requestsInRangeAll, priorRequestsAll, approvedExtensions, pendingExtensions, allPendingRequests, allApprovedRequests, leaveTypes] =
       await Promise.all([
         this.employeeRepository.findAll({}),
         this.leaveRepository.findAll({ status: "approved", from: rangeStart, to: rangeEnd }),
@@ -1132,7 +1315,9 @@ export class LeaveService {
         this.extensionRepository.findAll({ status: "pending" }),
         this.leaveRepository.findAll({ status: "pending" }),
         this.leaveRepository.findAll({ status: "approved" }),
+        this.leaveTypeRepository.findAll(),
       ]);
+    const leaveTypesMap = new Map(leaveTypes.map((t) => [t.id, t]));
 
     const employeeById = new Map(employees.map((e) => [e.id, e]));
     const departmentOf = (employeeId: number) => employeeById.get(employeeId)?.department ?? "Unassigned";
@@ -1149,9 +1334,11 @@ export class LeaveService {
       (e) => e.startDate >= priorRangeStart && e.startDate <= priorRangeEnd && inDept(e.employeeId),
     );
 
-    const annualDays = requestsInDept.reduce((sum, r) => sum + r.numberOfDays, 0);
+    // "Standalone" = any leave_requests row, regardless of type (annual, or any future
+    // standalone paid/unpaid type) — as opposed to unpaidDays, which is extensions specifically.
+    const standaloneLeaveDays = requestsInDept.reduce((sum, r) => sum + r.numberOfDays, 0);
     const unpaidDays = extensionsInDept.reduce((sum, e) => sum + e.numberOfDays, 0);
-    const daysTakenYtd = annualDays + unpaidDays;
+    const daysTakenYtd = standaloneLeaveDays + unpaidDays;
     const daysTakenPriorPeriod =
       priorRequestsInDept.reduce((sum, r) => sum + r.numberOfDays, 0) +
       priorExtensionsInDept.reduce((sum, e) => sum + e.numberOfDays, 0);
@@ -1177,12 +1364,27 @@ export class LeaveService {
     const overdueNames = overdue.map((r) => employeeById.get(r.employeeId)?.fullName ?? "Unknown");
     const unpaidPendingCount = pendingExtensions.filter((e) => inDept(e.employeeId)).length;
 
-    const totalTypedDays = annualDays + unpaidDays;
+    const daysByLeaveType = new Map<number, number>();
+    for (const r of requestsInDept) {
+      daysByLeaveType.set(r.leaveTypeId, (daysByLeaveType.get(r.leaveTypeId) ?? 0) + r.numberOfDays);
+    }
+    const unpaidExtensionType = leaveTypes.find((t) => t.code === "unpaid_extension");
+    if (unpaidExtensionType && unpaidDays > 0) {
+      daysByLeaveType.set(
+        unpaidExtensionType.id,
+        (daysByLeaveType.get(unpaidExtensionType.id) ?? 0) + unpaidDays,
+      );
+    }
+    const totalTypedDays = [...daysByLeaveType.values()].reduce((sum, d) => sum + d, 0);
     const pct = (days: number) => (totalTypedDays === 0 ? 0 : Math.round((days / totalTypedDays) * 1000) / 10);
-    const leaveTypeSplit: AdminReportsResult["leaveTypeSplit"] = [
-      { type: "Annual Leave", days: annualDays, percent: pct(annualDays) },
-      { type: "Unpaid Extension", days: unpaidDays, percent: pct(unpaidDays) },
-    ];
+    const leaveTypeSplit: AdminReportsResult["leaveTypeSplit"] = [...daysByLeaveType.entries()]
+      .map(([leaveTypeId, days]) => ({
+        leaveTypeId,
+        leaveTypeName: leaveTypesMap.get(leaveTypeId)?.name ?? "Unknown",
+        days,
+        percent: pct(days),
+      }))
+      .sort((a, b) => b.days - a.days);
 
     const bucketStarts = Array.from({ length: 12 }, (_, i) => new Date(Date.UTC(targetYear, i, 1)));
     const bucketIndexByKey = new Map(bucketStarts.map((d, i) => [toISODate(d).slice(0, 7), i]));
@@ -1353,53 +1555,57 @@ export class LeaveService {
   }
 
   /**
-   * Persists the employee's current leave cycle as a durable history row (PDF §11) —
-   * does not affect live balance math, which is still derived on the fly by
-   * `computeBalance`/`getCurrentCycle`. Idempotent: the unique key on
-   * (employee_id, cycle_start) means calling this again for the same cycle is a no-op.
+   * Persists the employee's confirmed leave-cycle history (PDF §11: "after the employee
+   * returns from annual leave, the system should create the next leave cycle") — does not
+   * affect live balance math directly, which is still derived on the fly by `computeBalance`.
+   *
+   * Rebuilt from scratch every time, in true chronological order of every recorded actual
+   * back-to-work date, rather than patched one row at a time. A single BTW event doesn't carry
+   * enough information on its own to know whether it's "the first cycle" or "a renewal" —
+   * that depends on where it falls relative to every other confirmed return this employee has,
+   * which can change if dates get corrected or if returns get confirmed out of order. Rebuilding
+   * the whole chain from the current set of facts is what keeps it correct regardless of the
+   * order admin actions happened to run in.
    */
-  /**
-   * Per PDF §11: the new cycle starts on the actual back-to-work date itself (which already
-   * accounts for any extension — BTW = extension end + 1 when one was taken), not on an abstract
-   * anniversary of the eligibility date. The very first cycle has no prior BTW event to anchor to,
-   * so it starts at eligibility instead; every cycle after that starts exactly at `reference`.
-   */
-  async ensureCycleRecorded(
-    employeeId: number,
-    reference: Date,
-    sourceLeaveRequestId: number | null = null,
-  ): Promise<LeaveCycle> {
+  private async rebuildCycleChain(employeeId: number): Promise<void> {
     const employee = await this.requireEmployee(employeeId);
     const settings = await this.settingsRepository.get();
-    const priorCycles = await this.leaveCycleRepository.findByEmployeeId(employeeId);
-    const isFirstCycle = priorCycles.length === 0;
+    const allRequests = await this.leaveRepository.findByEmployeeId(employeeId);
+    const confirmedReturns = allRequests
+      .filter((r) => r.status === "approved" && r.actualBackToWorkDate !== null)
+      .sort((a, b) => (a.actualBackToWorkDate as string).localeCompare(b.actualBackToWorkDate as string));
 
-    const cycleStart = isFirstCycle ? this.getEligibleFrom(employee, settings) : reference;
-    const cycleEnd = addDays(addMonths(cycleStart, settings.cycleLengthMonths), -1);
-    const cycleStartISO = toISODate(cycleStart);
-
-    const existing = await this.leaveCycleRepository.findByEmployeeAndStart(employeeId, cycleStartISO);
-    if (existing) {
-      return existing;
+    await this.leaveCycleRepository.deleteAllByEmployeeId(employeeId);
+    if (confirmedReturns.length === 0) {
+      return;
     }
 
-    const created = await this.leaveCycleRepository.create({
-      employeeId,
-      cycleStart: cycleStartISO,
-      cycleEnd: toISODate(cycleEnd),
-      entitlementDays: employee.annualEntitlementDays,
-      generatedReason: isFirstCycle ? "initial" : "renewal",
-      sourceLeaveRequestId,
-    });
+    const eligibleFrom = this.getEligibleFrom(employee, settings);
+    const created: LeaveCycle[] = [];
+    for (let i = 0; i < confirmedReturns.length; i++) {
+      const request = confirmedReturns[i];
+      const isFirstCycle = i === 0;
+      const cycleStart = isFirstCycle ? eligibleFrom : parseISODate(request.actualBackToWorkDate as string);
+      const cycleEnd = addDays(addMonths(cycleStart, settings.cycleLengthMonths), -1);
+
+      created.push(
+        await this.leaveCycleRepository.create({
+          employeeId,
+          cycleStart: toISODate(cycleStart),
+          cycleEnd: toISODate(cycleEnd),
+          entitlementDays: employee.annualEntitlementDays,
+          generatedReason: isFirstCycle ? "initial" : "renewal",
+          sourceLeaveRequestId: request.id,
+        }),
+      );
+    }
 
     await this.auditRepository.record({
       employeeId,
       performedByEmployeeId: employeeId,
       action: "leave_cycle_generated",
-      details: { cycleStart: created.cycleStart, cycleEnd: created.cycleEnd, entitlementDays: created.entitlementDays },
+      details: { cycles: created.map((c) => ({ cycleStart: c.cycleStart, cycleEnd: c.cycleEnd })) },
     });
-
-    return created;
   }
 
   private async requireEmployee(employeeId: number): Promise<Employee> {
@@ -1426,10 +1632,11 @@ export class LeaveService {
   }
 
   /**
-   * The real cycle boundary is whatever the confirmed `leave_cycles` chain says it is —
-   * anchored to actual back-to-work events, per PDF §11 — never a recalculated calendar
-   * anniversary. A cycle only renews when a real BTW event confirms it; until then, the
-   * latest confirmed cycle stays "current" no matter how much calendar time has passed.
+   * Once a BTW event has confirmed a cycle, that confirmed `leave_cycles` chain is the real
+   * boundary — anchored to actual back-to-work events, per PDF §11, never recalculated. Before
+   * any confirmation exists yet, a provisional calendar-anniversary cycle advances forward from
+   * eligibility on its own (see the `else` branch below) so a long-tenured employee who hasn't
+   * taken/completed leave yet still gets a current-looking cycle instead of a frozen first one.
    */
   private async computeBalance(
     employee: Employee,
@@ -1455,34 +1662,123 @@ export class LeaveService {
       endISO = confirmed.cycleEnd;
       entitlement = confirmed.entitlementDays;
     } else {
-      // No BTW event has ever been confirmed yet — the provisional first-cycle window,
-      // mirroring ensureCycleRecorded's own fallback so the two never disagree.
+      // No BTW event has ever been confirmed yet — provisionally advance a calendar-anniversary
+      // cycle forward from eligibility until it covers `cycleReference`, so a long-tenured
+      // employee who simply hasn't taken (or completed) leave yet doesn't stay frozen on cycle 1
+      // forever. The instant a real BTW event is confirmed, the `confirmed` branch above takes
+      // over exactly as before — this only fills the gap before that first confirmation exists.
       const eligibleFrom = this.getEligibleFrom(employee, settings);
-      const end = addDays(addMonths(eligibleFrom, settings.cycleLengthMonths), -1);
-      startISO = toISODate(eligibleFrom);
-      endISO = toISODate(end);
+      let windowStart = eligibleFrom;
+      let windowEnd = addDays(addMonths(windowStart, settings.cycleLengthMonths), -1);
+      while (isAfter(cycleReference, windowEnd)) {
+        windowStart = addMonths(windowStart, settings.cycleLengthMonths);
+        windowEnd = addDays(addMonths(windowStart, settings.cycleLengthMonths), -1);
+      }
+      startISO = toISODate(windowStart);
+      endISO = toISODate(windowEnd);
       entitlement = employee.annualEntitlementDays;
       // That window hasn't started yet if eligibility itself is still in the future —
       // there's no entitlement to show as "current" until the 13th month actually arrives.
       isEligible = !isBefore(reference, eligibleFrom);
     }
 
-    // A cycle's real end is whenever the next one is confirmed to begin — never later than
-    // that, no matter what its own theoretical 12-month span says. While the employee is
-    // out, we already know that hand-off date (their real back-to-work date), so the
-    // "current" and "next" cycles shown must never overlap or leave a gap between them.
+    // A cycle's *displayed* end is whenever the next one is confirmed to begin — never later
+    // than that, no matter what its own theoretical 12-month span says. While the employee is
+    // out, we already know that hand-off date (their real back-to-work date), so the shown
+    // "current" and "next" cycles must never overlap or leave a gap between them. This only
+    // caps what's *shown* as the cycle end, though — an already-approved request starting
+    // exactly on that hand-off date (e.g. one leave immediately followed by another, back to
+    // back) still draws from this same, still-open entitlement pool until a cycle actually gets
+    // confirmed, so the day-count math below must keep using the real, uncapped `endISO`.
+    let displayEndISO = endISO;
     if (activeNextCycleStart && activeNextCycleStart > startISO) {
       const cappedEnd = toISODate(addDays(parseISODate(activeNextCycleStart), -1));
-      if (cappedEnd < endISO) {
-        endISO = cappedEnd;
+      if (cappedEnd < displayEndISO) {
+        displayEndISO = cappedEnd;
       }
     }
 
-    const inCycle = allRequests.filter((r) => r.startDate >= startISO && r.startDate <= endISO);
-    const used = inCycle
-      .filter((r) => r.status === "approved")
+    const used = allRequests
+      .filter((r) => r.status === "approved" && r.startDate >= startISO && r.startDate <= endISO)
       .reduce((sum, r) => sum + r.numberOfDays, 0);
-    const pending = inCycle
+    // Pending reflects every outstanding request awaiting a decision, full stop — not scoped to
+    // this cycle's window. It's provisional by definition, so a request that happens to start on
+    // or after the cycle boundary (e.g. immediately following a current leave) must still show up
+    // instead of silently vanishing until that later cycle is confirmed.
+    const pending = allRequests
+      .filter((r) => r.status === "pending")
+      .reduce((sum, r) => sum + r.numberOfDays, 0);
+
+    return {
+      isEligible,
+      cycleStart: startISO,
+      cycleEnd: displayEndISO,
+      entitlement: isEligible ? entitlement : 0,
+      used: isEligible ? used : 0,
+      pending: isEligible ? pending : 0,
+      remaining: isEligible ? entitlement - used - pending : 0,
+      // Per PDF §5, "Next Eligibility Date" is a standing dashboard field, not something that
+      // should disappear the moment a currently-in-progress leave ends. While someone's out,
+      // their own real expected-BTW date is the most precise answer; otherwise it falls back to
+      // the day right after whatever cycle is currently governing (confirmed or provisional).
+      nextCycleStartsOn: isEligible
+        ? activeNextCycleStart ?? toISODate(addDays(parseISODate(displayEndISO), 1))
+        : null,
+    };
+  }
+
+  /** Dispatches to the BTW-anchored annual cycle logic for 'annual', or a simple flat window for any other paid type. */
+  private async computeBalanceForType(
+    employee: Employee,
+    leaveType: LeaveType,
+    requestsOfType: LeaveRequest[],
+    reference: Date,
+    cycleReference: Date,
+    settings: CompanySettings,
+  ): Promise<LeaveBalance> {
+    if (leaveType.code === "annual") {
+      return this.computeBalance(employee, requestsOfType, reference, cycleReference, settings);
+    }
+    return this.computeSimpleTypeBalance(employee, leaveType, requestsOfType, reference, settings);
+  }
+
+  /**
+   * Balance for any paid type besides annual — a flat anniversary window (from eligibility if
+   * required, else from joining date) advancing by the company's cycle length, no persisted
+   * cycle row and no back-to-work anchoring (that sophistication stays annual-only for now).
+   */
+  private async computeSimpleTypeBalance(
+    employee: Employee,
+    leaveType: LeaveType,
+    requestsOfType: LeaveRequest[],
+    reference: Date,
+    settings: CompanySettings,
+  ): Promise<LeaveBalance> {
+    const windowOrigin = leaveType.requiresEligibility
+      ? this.getEligibleFrom(employee, settings)
+      : parseISODate(employee.joiningDate);
+    const isEligible = !isBefore(reference, windowOrigin);
+
+    let windowStart = windowOrigin;
+    let windowEnd = addDays(addMonths(windowStart, settings.cycleLengthMonths), -1);
+    while (isAfter(reference, windowEnd)) {
+      windowStart = addMonths(windowStart, settings.cycleLengthMonths);
+      windowEnd = addDays(addMonths(windowStart, settings.cycleLengthMonths), -1);
+    }
+    const startISO = toISODate(windowStart);
+    const endISO = toISODate(windowEnd);
+
+    const override = await this.leaveTypeRepository.getEmployeeEntitlementOverride(employee.id, leaveType.id);
+    const entitlement = override ?? leaveType.defaultEntitlementDays ?? 0;
+
+    const used = requestsOfType
+      .filter((r) => r.status === "approved" && r.startDate >= startISO && r.startDate <= endISO)
+      .reduce((sum, r) => sum + r.numberOfDays, 0);
+    // Pending reflects every outstanding request awaiting a decision, full stop — not scoped to
+    // this cycle's window. It's provisional by definition, so a request that happens to start on
+    // or after the cycle boundary (e.g. immediately following a current leave) must still show up
+    // instead of silently vanishing until that later cycle is confirmed.
+    const pending = requestsOfType
       .filter((r) => r.status === "pending")
       .reduce((sum, r) => sum + r.numberOfDays, 0);
 
@@ -1494,7 +1790,7 @@ export class LeaveService {
       used: isEligible ? used : 0,
       pending: isEligible ? pending : 0,
       remaining: isEligible ? entitlement - used - pending : 0,
-      nextCycleStartsOn: isEligible ? activeNextCycleStart : null,
+      nextCycleStartsOn: null,
     };
   }
 
@@ -1505,47 +1801,56 @@ export class LeaveService {
     days: number,
     balance: LeaveBalance,
     settings: CompanySettings,
+    leaveType: LeaveType,
   ): Promise<LeaveCheckItem[]> {
-    const eligibleFrom = this.getEligibleFrom(employee, settings);
-    const today = todayUTC();
-    const isEligible = !isBefore(today, eligibleFrom);
+    const checks: LeaveCheckItem[] = [];
 
-    const eligibilityCheck: LeaveCheckItem = isEligible
-      ? {
-          key: "eligibility",
-          ok: true,
-          title: "Eligible for annual leave",
-          body: `Eligible since ${formatHumanDate(eligibleFrom)}.`,
-        }
-      : {
-          key: "eligibility",
-          ok: false,
-          title: "Not yet eligible",
-          body: `Annual leave becomes available from ${formatHumanDate(eligibleFrom)} — 13th month from joining.`,
-        };
+    if (leaveType.requiresEligibility) {
+      const eligibleFrom = this.getEligibleFrom(employee, settings);
+      const today = todayUTC();
+      const isEligible = !isBefore(today, eligibleFrom);
+      checks.push(
+        isEligible
+          ? {
+              key: "eligibility",
+              ok: true,
+              title: `Eligible for ${leaveType.name.toLowerCase()}`,
+              body: `Eligible since ${formatHumanDate(eligibleFrom)}.`,
+            }
+          : {
+              key: "eligibility",
+              ok: false,
+              title: "Not yet eligible",
+              body: `${leaveType.name} becomes available from ${formatHumanDate(eligibleFrom)} — 13th month from joining.`,
+            },
+      );
+    }
 
-    const remainingAfter = balance.remaining - days;
-    const balanceCheck: LeaveCheckItem =
-      remainingAfter >= 0
-        ? {
-            key: "balance",
-            ok: true,
-            title: "Sufficient balance",
-            body: `${balance.remaining} days available for this ${days}-day request.`,
-          }
-        : {
-            key: "balance",
-            ok: false,
-            title: "Insufficient balance",
-            body: `Only ${balance.remaining} days available — this request needs ${days}.`,
-          };
+    if (leaveType.isPaid) {
+      const remainingAfter = balance.remaining - days;
+      checks.push(
+        remainingAfter >= 0
+          ? {
+              key: "balance",
+              ok: true,
+              title: "Sufficient balance",
+              body: `${balance.remaining} days available for this ${days}-day request.`,
+            }
+          : {
+              key: "balance",
+              ok: false,
+              title: "Insufficient balance",
+              body: `Only ${balance.remaining} days available — this request needs ${days}.`,
+            },
+      );
+    }
 
     const overlapping = await this.leaveRepository.findOverlapping(
       employee.id,
       toISODate(startDate),
       toISODate(endDate),
     );
-    const overlapCheck: LeaveCheckItem =
+    checks.push(
       overlapping.length === 0
         ? {
             key: "overlap",
@@ -1558,9 +1863,10 @@ export class LeaveService {
             ok: false,
             title: "Overlaps an existing request",
             body: `Clashes with your ${overlapping[0].status} request, ${formatHumanDate(parseISODate(overlapping[0].startDate))} – ${formatHumanDate(parseISODate(overlapping[0].endDate))}.`,
-          };
+          },
+    );
 
-    return [eligibilityCheck, balanceCheck, overlapCheck];
+    return checks;
   }
 
   private async getTeamOverlap(employee: Employee, startDate: Date, endDate: Date): Promise<TeamOverlapEntry[]> {
