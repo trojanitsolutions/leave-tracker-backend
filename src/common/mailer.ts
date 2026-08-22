@@ -6,6 +6,12 @@ const transporter = nodemailer.createTransport({
   port: env.smtp.port,
   secure: env.smtp.port === 465,
   auth: env.smtp.user ? { user: env.smtp.user, pass: env.smtp.password } : undefined,
+  // Nodemailer's defaults can hang for minutes (some hosts silently block outbound SMTP
+  // egress) — every caller here awaits this before responding, so bound it to fail fast
+  // and fall back to the on-screen credentials UX instead of an indefinite "Saving…" spinner.
+  connectionTimeout: 8_000,
+  greetingTimeout: 5_000,
+  socketTimeout: 10_000,
 });
 
 export async function sendWelcomeEmail(
