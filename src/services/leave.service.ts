@@ -102,7 +102,6 @@ export class LeaveService {
     private readonly leaveTypeRepository: ILeaveTypeRepository,
   ) {}
 
-  /** Resolves the requested type, defaulting to Annual Leave when omitted (backward compatible). */
   private async resolveLeaveType(leaveTypeId?: number): Promise<LeaveType> {
     if (leaveTypeId === undefined) {
       const annual = await this.leaveTypeRepository.findByCode("annual");
@@ -495,13 +494,6 @@ export class LeaveService {
     };
   }
 
-  /**
-   * Drops requests immediately superseded by another approved request for the same employee
-   * (next one starts the day this one ends) — i.e. a standalone leave request chained onto an
-   * existing one instead of through the Extension flow. Only the chain's last link has a real
-   * expected back-to-work date; earlier links would otherwise sit "Overdue" forever since the
-   * employee never actually returns in between.
-   */
   private excludeChainedPredecessors(requests: LeaveRequest[]): LeaveRequest[] {
     const startDatesByEmployee = new Map<number, Set<string>>();
     for (const r of requests) {
@@ -515,7 +507,6 @@ export class LeaveService {
     });
   }
 
-  /** Team overview for the Manager Dashboard — distinct from the actionable queue on the Approvals screen. */
   async getManagerOverview(managerId: number): Promise<ManagerOverview> {
     const leaveTypesMap = await this.getLeaveTypesMap();
     const teamMembers = await this.employeeRepository.findByManagerId(managerId);
@@ -688,9 +679,7 @@ export class LeaveService {
       : [];
     const hasPendingExtension = linkedExtensions.some((e) => e.status === "pending");
     const approvedExtensions = linkedExtensions.filter((e) => e.status === "approved");
-    // Anchor for "must be contiguous" — the day the employee is next due back, accounting for any
-    // already-approved extension(s) already chained onto this leave (§9: separate records, but a
-    // second extension can still follow the first once it's decided).
+
     const anchorEndDate = currentLeave
       ? approvedExtensions.reduce(
           (latest, e) => (e.endDate > latest ? e.endDate : latest),
@@ -872,9 +861,6 @@ export class LeaveService {
     const updated = await this.extensionRepository.updateStatus(extensionId, "pending");
 
     if (wasApproved) {
-      // Contiguity is enforced at creation time, so the extension's own start
-      // date is exactly what the parent leave's expected BTW was before this
-      // extension was approved.
       await this.leaveRepository.updateExpectedBackToWork(extension.leaveRequestId, extension.startDate);
     }
 
@@ -1221,9 +1207,6 @@ export class LeaveService {
       status: input.status,
     });
 
-    // The back-to-work date must track a corrected end date — unless an approved extension
-    // has already shifted it forward, in which case that shift takes precedence and correcting
-    // the original leave's own end date shouldn't clobber it back.
     if (input.endDate !== undefined) {
       const linkedExtensions = await this.extensionRepository.findByLeaveRequestId(leaveRequestId);
       const hasApprovedExtension = linkedExtensions.some((e) => e.status === "approved");
@@ -1286,10 +1269,6 @@ export class LeaveService {
       details: { previous: request.actualBackToWorkDate, actualBackToWorkDate },
     });
 
-    // Recording, correcting, or clearing a BTW date can change the true chronological order
-    // of every confirmed-return event this employee has — rebuild the whole cycle chain from
-    // scratch rather than patch one row, so which cycle is "initial" vs. "renewal" is always
-    // derived from real dates, never from which admin action happened to run first.
     await this.rebuildCycleChain(request.employeeId);
 
     return updated;
@@ -1334,8 +1313,6 @@ export class LeaveService {
       (e) => e.startDate >= priorRangeStart && e.startDate <= priorRangeEnd && inDept(e.employeeId),
     );
 
-    // "Standalone" = any leave_requests row, regardless of type (annual, or any future
-    // standalone paid/unpaid type) — as opposed to unpaidDays, which is extensions specifically.
     const standaloneLeaveDays = requestsInDept.reduce((sum, r) => sum + r.numberOfDays, 0);
     const unpaidDays = extensionsInDept.reduce((sum, e) => sum + e.numberOfDays, 0);
     const daysTakenYtd = standaloneLeaveDays + unpaidDays;
@@ -1554,19 +1531,6 @@ export class LeaveService {
     }
   }
 
-  /**
-   * Persists the employee's confirmed leave-cycle history (PDF §11: "after the employee
-   * returns from annual leave, the system should create the next leave cycle") — does not
-   * affect live balance math directly, which is still derived on the fly by `computeBalance`.
-   *
-   * Rebuilt from scratch every time, in true chronological order of every recorded actual
-   * back-to-work date, rather than patched one row at a time. A single BTW event doesn't carry
-   * enough information on its own to know whether it's "the first cycle" or "a renewal" —
-   * that depends on where it falls relative to every other confirmed return this employee has,
-   * which can change if dates get corrected or if returns get confirmed out of order. Rebuilding
-   * the whole chain from the current set of facts is what keeps it correct regardless of the
-   * order admin actions happened to run in.
-   */
   private async rebuildCycleChain(employeeId: number): Promise<void> {
     const employee = await this.requireEmployee(employeeId);
     const settings = await this.settingsRepository.get();
@@ -1631,20 +1595,12 @@ export class LeaveService {
     return addMonths(parseISODate(employee.joiningDate), settings.eligibilityMonths);
   }
 
-  /**
-   * Once a BTW event has confirmed a cycle, that confirmed `leave_cycles` chain is the real
-   * boundary — anchored to actual back-to-work events, per PDF §11, never recalculated. Before
-   * any confirmation exists yet, a provisional calendar-anniversary cycle advances forward from
-   * eligibility on its own (see the `else` branch below) so a long-tenured employee who hasn't
-   * taken/completed leave yet still gets a current-looking cycle instead of a frozen first one.
-   */
   private async computeBalance(
     employee: Employee,
     allRequests: LeaveRequest[],
     reference: Date,
     cycleReference: Date = reference,
     settings: CompanySettings,
-    /** The real back-to-work date of whatever leave/extension is currently in progress, if any. */
     activeNextCycleStart: string | null = null,
   ): Promise<LeaveBalance> {
     const cycleReferenceISO = toISODate(cycleReference);
@@ -1662,11 +1618,6 @@ export class LeaveService {
       endISO = confirmed.cycleEnd;
       entitlement = confirmed.entitlementDays;
     } else {
-      // No BTW event has ever been confirmed yet — provisionally advance a calendar-anniversary
-      // cycle forward from eligibility until it covers `cycleReference`, so a long-tenured
-      // employee who simply hasn't taken (or completed) leave yet doesn't stay frozen on cycle 1
-      // forever. The instant a real BTW event is confirmed, the `confirmed` branch above takes
-      // over exactly as before — this only fills the gap before that first confirmation exists.
       const eligibleFrom = this.getEligibleFrom(employee, settings);
       let windowStart = eligibleFrom;
       let windowEnd = addDays(addMonths(windowStart, settings.cycleLengthMonths), -1);
@@ -1677,19 +1628,9 @@ export class LeaveService {
       startISO = toISODate(windowStart);
       endISO = toISODate(windowEnd);
       entitlement = employee.annualEntitlementDays;
-      // That window hasn't started yet if eligibility itself is still in the future —
-      // there's no entitlement to show as "current" until the 13th month actually arrives.
       isEligible = !isBefore(reference, eligibleFrom);
     }
 
-    // A cycle's *displayed* end is whenever the next one is confirmed to begin — never later
-    // than that, no matter what its own theoretical 12-month span says. While the employee is
-    // out, we already know that hand-off date (their real back-to-work date), so the shown
-    // "current" and "next" cycles must never overlap or leave a gap between them. This only
-    // caps what's *shown* as the cycle end, though — an already-approved request starting
-    // exactly on that hand-off date (e.g. one leave immediately followed by another, back to
-    // back) still draws from this same, still-open entitlement pool until a cycle actually gets
-    // confirmed, so the day-count math below must keep using the real, uncapped `endISO`.
     let displayEndISO = endISO;
     if (activeNextCycleStart && activeNextCycleStart > startISO) {
       const cappedEnd = toISODate(addDays(parseISODate(activeNextCycleStart), -1));
@@ -1701,10 +1642,6 @@ export class LeaveService {
     const used = allRequests
       .filter((r) => r.status === "approved" && r.startDate >= startISO && r.startDate <= endISO)
       .reduce((sum, r) => sum + r.numberOfDays, 0);
-    // Pending reflects every outstanding request awaiting a decision, full stop — not scoped to
-    // this cycle's window. It's provisional by definition, so a request that happens to start on
-    // or after the cycle boundary (e.g. immediately following a current leave) must still show up
-    // instead of silently vanishing until that later cycle is confirmed.
     const pending = allRequests
       .filter((r) => r.status === "pending")
       .reduce((sum, r) => sum + r.numberOfDays, 0);
@@ -1717,17 +1654,12 @@ export class LeaveService {
       used: isEligible ? used : 0,
       pending: isEligible ? pending : 0,
       remaining: isEligible ? entitlement - used - pending : 0,
-      // Per PDF §5, "Next Eligibility Date" is a standing dashboard field, not something that
-      // should disappear the moment a currently-in-progress leave ends. While someone's out,
-      // their own real expected-BTW date is the most precise answer; otherwise it falls back to
-      // the day right after whatever cycle is currently governing (confirmed or provisional).
       nextCycleStartsOn: isEligible
         ? activeNextCycleStart ?? toISODate(addDays(parseISODate(displayEndISO), 1))
         : null,
     };
   }
 
-  /** Dispatches to the BTW-anchored annual cycle logic for 'annual', or a simple flat window for any other paid type. */
   private async computeBalanceForType(
     employee: Employee,
     leaveType: LeaveType,
@@ -1742,11 +1674,6 @@ export class LeaveService {
     return this.computeSimpleTypeBalance(employee, leaveType, requestsOfType, reference, settings);
   }
 
-  /**
-   * Balance for any paid type besides annual — a flat anniversary window (from eligibility if
-   * required, else from joining date) advancing by the company's cycle length, no persisted
-   * cycle row and no back-to-work anchoring (that sophistication stays annual-only for now).
-   */
   private async computeSimpleTypeBalance(
     employee: Employee,
     leaveType: LeaveType,
@@ -1774,10 +1701,6 @@ export class LeaveService {
     const used = requestsOfType
       .filter((r) => r.status === "approved" && r.startDate >= startISO && r.startDate <= endISO)
       .reduce((sum, r) => sum + r.numberOfDays, 0);
-    // Pending reflects every outstanding request awaiting a decision, full stop — not scoped to
-    // this cycle's window. It's provisional by definition, so a request that happens to start on
-    // or after the cycle boundary (e.g. immediately following a current leave) must still show up
-    // instead of silently vanishing until that later cycle is confirmed.
     const pending = requestsOfType
       .filter((r) => r.status === "pending")
       .reduce((sum, r) => sum + r.numberOfDays, 0);

@@ -35,5 +35,6 @@ router.get("/", asyncHandler(controller.list));
 router.get("/:id", asyncHandler(controller.get));
 router.post("/", asyncHandler(controller.create));
 router.patch("/:id", asyncHandler(controller.update));
+router.delete("/:id", asyncHandler(controller.remove));
 
 export default router;

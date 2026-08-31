@@ -88,8 +88,6 @@ export class EmployeeService {
   ): Promise<Employee> {
     const before = await this.get(id);
 
-    // Admin's only manager-related action is assigning one as someone's reporting manager —
-    // nothing about the manager's own record is editable here, not just their role.
     if (before.role === "manager") {
       throw ApiError.badRequest(
         "Manager accounts can't be edited here — only assigned as a reporting manager.",
@@ -104,8 +102,6 @@ export class EmployeeService {
     }
     if (input.role !== undefined) {
       this.validateRole(input.role);
-      // Manager accounts are provisioned via the create-manager script, never promoted into
-      // here (before.role === "manager" is already rejected above, so this only guards promotion).
       if (input.role !== before.role && input.role === "manager") {
         throw ApiError.badRequest("A manager's role can't be changed here.");
       }
@@ -135,6 +131,19 @@ export class EmployeeService {
     });
 
     return updated;
+  }
+
+  async remove(id: number): Promise<void> {
+    const employee = await this.get(id);
+    if (employee.role === "manager") {
+      throw ApiError.badRequest("Manager accounts can't be deleted here.");
+    }
+    if (await this.employeeRepository.hasLeaveHistory(id)) {
+      throw ApiError.badRequest(
+        "This employee has leave history and can't be deleted — deactivate them instead.",
+      );
+    }
+    await this.employeeRepository.delete(id);
   }
 
   private validatePassword(password: string): void {

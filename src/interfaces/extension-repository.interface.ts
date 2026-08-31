@@ -27,7 +27,6 @@ export interface IExtensionRepository {
   findPendingByManagerId(managerId: number): Promise<LeaveExtension[]>;
   findAll(filter?: ExtensionFilter): Promise<LeaveExtension[]>;
   create(data: CreateLeaveExtensionInput): Promise<LeaveExtension>;
-  /** Sets `decided_at = NOW()` for approved/rejected, or clears it when reverting to pending (undo). */
   updateStatus(id: number, status: LeaveDecisionStatus): Promise<LeaveExtension>;
   delete(id: number): Promise<void>;
 }

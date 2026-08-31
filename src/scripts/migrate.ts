@@ -30,13 +30,6 @@ async function constraintExists(connection: mysql.Connection, table: string, con
   return Number(rows[0].cnt) > 0;
 }
 
-/**
- * Bridges `leave_requests`/`leave_extensions` on a live, already-populated database up to
- * the fresh-install schema shape (leave_type_id NOT NULL + FK). MySQL has no
- * `ADD COLUMN IF NOT EXISTS`, so a brand-new database gets the column directly from
- * schema.sql's CREATE TABLE, while an existing one is bridged here: add nullable, backfill
- * every existing row to the appropriate built-in type, tighten to NOT NULL, then add the FK.
- */
 async function ensureLeaveTypeColumn(connection: mysql.Connection): Promise<void> {
   const targets: { table: string; fk: string; code: string }[] = [
     { table: "leave_requests", fk: "fk_leave_type", code: "annual" },

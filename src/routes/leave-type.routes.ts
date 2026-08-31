@@ -10,8 +10,6 @@ const router = Router();
 const leaveTypeService = new LeaveTypeService(new LeaveTypeRepository(), new AuditRepository());
 const controller = new LeaveTypeController(leaveTypeService);
 
-// Every authenticated role needs this list — employee apply-form dropdown, manager
-// queue/calendar color+label lookups, admin management screen all read from here.
 router.use(authenticate);
 router.get("/", asyncHandler(controller.list));
 

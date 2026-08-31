@@ -198,6 +198,25 @@ export class EmployeeRepository implements IEmployeeRepository {
   }
 
   async delete(id: number): Promise<void> {
-    await pool.query("UPDATE employees SET is_active = 0 WHERE id = ?", [id]);
+    await pool.query("DELETE FROM audit_log WHERE employee_id = ?", [id]);
+    await pool.query("DELETE FROM employees WHERE id = ?", [id]);
+  }
+
+  async hasLeaveHistory(id: number): Promise<boolean> {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT
+         (SELECT COUNT(*) FROM leave_requests WHERE employee_id = ? OR manager_id = ?) +
+         (SELECT COUNT(*) FROM leave_extensions WHERE employee_id = ? OR manager_id = ?) +
+         (SELECT COUNT(*) FROM leave_cycles WHERE employee_id = ?) +
+         (SELECT COUNT(*) FROM employee_leave_entitlements WHERE employee_id = ?) +
+         (SELECT COUNT(*) FROM notifications WHERE employee_id = ?) +
+         (SELECT COUNT(*) FROM password_reset_otps WHERE employee_id = ?) +
+         (SELECT COUNT(*) FROM audit_log WHERE performed_by_employee_id = ?) +
+         (SELECT COUNT(*) FROM audit_log
+            WHERE employee_id = ? AND action NOT IN ('employee_created', 'employee_updated'))
+         AS total`,
+      [id, id, id, id, id, id, id, id, id, id],
+    );
+    return Number(rows[0].total) > 0;
   }
 }

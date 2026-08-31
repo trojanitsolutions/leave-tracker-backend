@@ -52,10 +52,6 @@ export class LeaveTypeService {
       }
     }
 
-    // System rows (Annual Leave, Unpaid Extension) have fixed, already-valid configs and can't
-    // have isPaid/defaultEntitlementDays touched anyway (guarded above) — Annual Leave in
-    // particular is paid with an intentionally-null defaultEntitlementDays (it uses
-    // employees.annual_entitlement_days instead), which would wrongly fail this check.
     if (!before.isSystem) {
       const isPaid = input.isPaid ?? before.isPaid;
       const entitlement =
@@ -100,7 +96,6 @@ export class LeaveTypeService {
     return updated;
   }
 
-  /** Only allowed when no leave record has ever referenced this type — otherwise deactivate instead. */
   async remove(adminId: number, id: number): Promise<void> {
     const type = await this.requireType(id);
     if (type.isSystem) {

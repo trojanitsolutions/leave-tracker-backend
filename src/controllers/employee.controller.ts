@@ -81,4 +81,9 @@ export class EmployeeController {
     );
     sendSuccess(res, updated);
   };
+
+  remove = async (req: Request, res: Response): Promise<void> => {
+    await this.employeeService.remove(this.id(req));
+    sendSuccess(res, { deleted: true });
+  };
 }

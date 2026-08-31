@@ -4,7 +4,6 @@ export type LeaveDecisionStatus = "pending" | "approved" | "rejected" | "cancell
 
 export type EmployeeLeaveStatus = "not_on_leave" | "on_leave" | "on_unpaid_extension" | "returned";
 
-/** Structural — which physical table a record came from. Stays 2-valued forever, unlike LeaveType. */
 export type LeaveRecordKind = "leave" | "extension";
 
 export interface LeaveType {

@@ -1,12 +1,6 @@
 import bcrypt from "bcryptjs";
 import { pool } from "../config/database";
 
-/**
- * Manager accounts are never created through the Employees screen — per the requirements,
- * a manager is provisioned the same deliberate, out-of-band way as the first admin account.
- * Admin's only manager-related job afterward is assigning this person as someone's
- * reporting manager from the Employees screen; nothing else about them is admin-editable there.
- */
 async function createManager(): Promise<void> {
   const [employeeCode, fullName, email, password, department] = process.argv.slice(2);
 

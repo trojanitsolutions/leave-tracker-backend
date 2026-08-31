@@ -48,10 +48,8 @@ export interface EmployeeOverview {
   status: EmployeeLeaveStatus;
   currentLeave: LeaveRequest | null;
   currentExtension: LeaveExtension | null;
-  /** Name of whichever leave type is currently in progress (currentLeave or currentExtension), if any. */
   currentLeaveTypeName: string | null;
   balance: LeaveBalance;
-  /** Balances for every other active paid type besides Annual Leave. Empty until a second paid type exists. */
   otherBalances: EmployeeOtherBalance[];
   recent: LeaveHistoryEntry[];
 }
@@ -93,7 +91,6 @@ export interface ApplyLeaveInput {
   reason: string | null;
   attachmentName: string | null;
   attachmentUrl: string | null;
-  /** Defaults to Annual Leave server-side when omitted. */
   leaveTypeId?: number;
 }
 
