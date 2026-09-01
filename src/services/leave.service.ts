@@ -412,9 +412,7 @@ export class LeaveService {
     const today = todayUTC();
     const weekAhead = addDays(today, 7);
 
-    const teamOutNextWeek = approvedRequests.filter((r) =>
-      rangesOverlap(parseISODate(r.startDate), parseISODate(r.endDate), today, weekAhead),
-    ).length;
+    const peopleOutNextWeek = this.countDistinctEmployeesOverlapping(approvedRequests, today, weekAhead);
 
     const notReturnedAsExpected = approvedRequests.filter(
       (r) => r.actualBackToWorkDate === null && isBefore(parseISODate(r.expectedBackToWorkDate), today),
@@ -486,7 +484,7 @@ export class LeaveService {
       stats: {
         awaitingYou: pendingLeaveRequests.length + pendingExtensions.length,
         oldestInQueueDays,
-        teamOutNextWeek,
+        peopleOutNextWeek,
         teamSize: teamMembers.length,
         notReturnedAsExpected,
       },
@@ -505,6 +503,16 @@ export class LeaveService {
       const nextDay = toISODate(addDays(parseISODate(r.endDate), 1));
       return !startDatesByEmployee.get(r.employeeId)?.has(nextDay);
     });
+  }
+
+  /** Counts distinct employees with a request overlapping the window, so one person with two approved requests still counts once. */
+  private countDistinctEmployeesOverlapping(requests: LeaveRequest[], from: Date, to: Date): number {
+    const employeeIds = new Set(
+      requests
+        .filter((r) => rangesOverlap(parseISODate(r.startDate), parseISODate(r.endDate), from, to))
+        .map((r) => r.employeeId),
+    );
+    return employeeIds.size;
   }
 
   async getManagerOverview(managerId: number): Promise<ManagerOverview> {
@@ -574,9 +582,7 @@ export class LeaveService {
       })
       .sort((a, b) => a.expectedBackToWorkDate.localeCompare(b.expectedBackToWorkDate));
 
-    const teamOutNextWeek = approvedRequests.filter((r) =>
-      rangesOverlap(parseISODate(r.startDate), parseISODate(r.endDate), today, weekAhead),
-    ).length;
+    const peopleOutNextWeek = this.countDistinctEmployeesOverlapping(approvedRequests, today, weekAhead);
     const notReturnedAsExpected = chainTailRequests.filter(
       (r) => r.actualBackToWorkDate === null && isBefore(parseISODate(r.expectedBackToWorkDate), today),
     ).length;
@@ -586,7 +592,7 @@ export class LeaveService {
         teamSize: teamMembers.length,
         currentlyOnLeave: currentlyOnLeave.length,
         pendingApprovals: pendingLeaveRequests.length + pendingExtensions.length,
-        teamOutNextWeek,
+        peopleOutNextWeek,
         notReturnedAsExpected,
       },
       currentlyOnLeave,
@@ -1042,7 +1048,7 @@ export class LeaveService {
 
     const upcomingThisMonth = [...approvedRequests, ...pendingRequests].filter((r) => {
       const start = parseISODate(r.startDate);
-      return !isBefore(start, today) && !isAfter(start, monthEnd);
+      return isAfter(start, today) && !isAfter(start, monthEnd);
     }).length;
 
     const chainTailRequests = this.excludeChainedPredecessors(approvedRequests);

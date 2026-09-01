@@ -122,7 +122,7 @@ export interface ApplyExtensionInput {
 export interface ManagerQueueStats {
   awaitingYou: number;
   oldestInQueueDays: number;
-  teamOutNextWeek: number;
+  peopleOutNextWeek: number;
   teamSize: number;
   notReturnedAsExpected: number;
 }
@@ -195,7 +195,7 @@ export interface ManagerOverviewStats {
   teamSize: number;
   currentlyOnLeave: number;
   pendingApprovals: number;
-  teamOutNextWeek: number;
+  peopleOutNextWeek: number;
   notReturnedAsExpected: number;
 }
 
