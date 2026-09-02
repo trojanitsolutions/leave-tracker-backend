@@ -35,7 +35,7 @@ export const env = {
     password: optional("DB_PASSWORD", ""),
     name: optional("DB_NAME", "trojan_leave_tracker"),
     connectionLimit: Number(optional("DB_CONNECTION_LIMIT", "10")),
-    sslCa: optional("DB_SSL_CA", ""),
+    sslCa: optional("DB_SSL_CA", "").replace(/\\n/g, "\n"),
   },
   jwt: {
     secret: optional("JWT_SECRET", "dev-only-insecure-secret"),
