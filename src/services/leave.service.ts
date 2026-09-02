@@ -928,9 +928,9 @@ export class LeaveService {
     return rows.sort((a, b) => b.startDate.localeCompare(a.startDate));
   }
 
-  async getTeamCalendar(managerId: number, monthInput?: string): Promise<TeamCalendarResult> {
-    const teamMembers = await this.employeeRepository.findByManagerId(managerId);
-    return this.buildCalendarResult(teamMembers, monthInput);
+  async getTeamCalendar(monthInput?: string, department?: string): Promise<TeamCalendarResult> {
+    const employees = await this.employeeRepository.findAll({ isActive: true, department });
+    return this.buildCalendarResult(employees, monthInput);
   }
 
   async getAdminCalendar(monthInput?: string, department?: string): Promise<TeamCalendarResult> {
@@ -1592,8 +1592,8 @@ export class LeaveService {
     if (isAfter(startDate, endDate)) {
       throw ApiError.badRequest("End date must be on or after the start date.");
     }
-    if (isBefore(startDate, todayUTC())) {
-      throw ApiError.badRequest("Start date can't be in the past.");
+    if (!isAfter(startDate, todayUTC())) {
+      throw ApiError.badRequest("Start date must be at least one day in the future.");
     }
   }
 

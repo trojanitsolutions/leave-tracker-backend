@@ -1,6 +1,3 @@
--- Trojan Technologies Leave Tracker — core schema.
--- Only what the Apply-for-leave flow needs. Extensions and full audit
--- coverage land alongside their own business-logic passes.
 
 CREATE TABLE IF NOT EXISTS employees (
   id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -14,8 +11,6 @@ CREATE TABLE IF NOT EXISTS employees (
   joining_date DATE NOT NULL,
   annual_entitlement_days INT UNSIGNED NOT NULL DEFAULT 30,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
-  -- Bumped on logout / password change to invalidate every outstanding refresh
-  -- token for that employee at once, without storing individual tokens.
   token_version INT UNSIGNED NOT NULL DEFAULT 0,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -28,12 +23,8 @@ CREATE TABLE IF NOT EXISTS leave_types (
   name VARCHAR(100) NOT NULL UNIQUE,
   is_paid TINYINT(1) NOT NULL DEFAULT 1,
   requires_eligibility TINYINT(1) NOT NULL DEFAULT 1,
-  -- True only for the built-in Unpaid Extension type: must be requested as an
-  -- extension of an existing approved leave, never a standalone application.
   is_child_type TINYINT(1) NOT NULL DEFAULT 0,
   default_entitlement_days INT UNSIGNED NULL,
-  -- True only for the two built-in types (annual, unpaid_extension) — admin UI
-  -- locks every config field except name/sort_order on these rows.
   is_system TINYINT(1) NOT NULL DEFAULT 0,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
   sort_order INT UNSIGNED NOT NULL DEFAULT 0,
@@ -49,8 +40,7 @@ VALUES
   (1, 'annual', 'Annual Leave', 1, 1, 0, NULL, 1, 1, 1),
   (2, 'unpaid_extension', 'Unpaid Extension', 0, 0, 1, NULL, 1, 1, 2);
 
--- Per-employee entitlement override for any paid leave type EXCEPT 'annual', which
--- keeps using employees.annual_entitlement_days — an intentional, permanent asymmetry.
+
 CREATE TABLE IF NOT EXISTS employee_leave_entitlements (
   id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   employee_id INT UNSIGNED NOT NULL,
@@ -121,7 +111,6 @@ CREATE TABLE IF NOT EXISTS company_settings (
   default_annual_entitlement_days INT UNSIGNED NOT NULL DEFAULT 30,
   eligibility_months INT UNSIGNED NOT NULL DEFAULT 12,
   cycle_length_months INT UNSIGNED NOT NULL DEFAULT 12,
-  -- Admin dashboard alert thresholds — previously hardcoded, now tunable per company.
   back_to_work_watchlist_days INT UNSIGNED NOT NULL DEFAULT 10,
   approaching_eligibility_days INT UNSIGNED NOT NULL DEFAULT 60,
   pending_approval_alert_days INT UNSIGNED NOT NULL DEFAULT 3,

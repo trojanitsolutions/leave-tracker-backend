@@ -87,7 +87,8 @@ export class LeaveController {
 
   teamCalendar = async (req: Request, res: Response): Promise<void> => {
     const month = (req.query.month as string | undefined) || undefined;
-    const calendar = await this.leaveService.getTeamCalendar(this.employeeId(req), month);
+    const department = (req.query.department as string | undefined) || undefined;
+    const calendar = await this.leaveService.getTeamCalendar(month, department);
     sendSuccess(res, calendar);
   };
 
